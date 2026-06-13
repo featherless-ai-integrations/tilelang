@@ -797,5 +797,84 @@ def test_vector_math_scalarized_in_hip_source():
     )
 
 
+# ---------------------------------------------------------------------------
+# Fix 8 — src/rocm/codegen/codegen_hip.cc, src/tl_templates/hip/barrier.h
+#   Lower TileLang mbarrier intrinsics on HIP
+#
+# Symptom: Kernels using T.alloc_barrier() with T.barrier_wait()/arrive()
+#   failed during HIP codegen before launch:
+#       Unresolved call ir.Op(name="tl.ptx_fence_barrier_init")
+#
+# Fix: HIP codegen handles tl.ptx_fence_barrier_init and the HIP templates
+#   provide CTA-local software mbarrier helpers for the emitted tl::mbarrier_*
+#   calls.
+# ---------------------------------------------------------------------------
+
+
+@tilelang.jit(
+    target="hip",
+    pass_configs={
+        "tl.enable_aggressive_shared_memory_merge": True,
+        "tl.disable_data_race_check": True,
+        "tl.disable_shuffle_elect": True,
+    },
+    out_idx=[],
+)
+def _kernel_branch_barrier_codegen():
+    @T.prim_func
+    def kernel_branch_barrier(A: T.Tensor((1,), T.float32)):
+        with T.Kernel(1, threads=256):
+            ready = T.alloc_barrier(arrive_count=128)
+            free = T.alloc_barrier(arrive_count=128)
+            tx = T.get_thread_binding(0)
+            if tx < 128:
+                T.barrier_wait(ready, 0)
+                T.barrier_arrive(free)
+            else:
+                T.barrier_wait(free, 1)
+                T.barrier_arrive(ready)
+
+    return kernel_branch_barrier
+
+
+@tilelang.jit(
+    target="hip",
+    pass_configs={
+        "tl.enable_aggressive_shared_memory_merge": True,
+        "tl.disable_data_race_check": True,
+        "tl.disable_shuffle_elect": True,
+    },
+    out_idx=[],
+)
+def _kernel_ws_barrier_codegen():
+    @T.prim_func
+    def kernel_ws_barrier(A: T.Tensor((1,), T.float32)):
+        with T.Kernel(1, threads=256):
+            ready = T.alloc_barrier(arrive_count=128)
+            free = T.alloc_barrier(arrive_count=128)
+            with T.ws(0):
+                T.barrier_wait(ready, 0)
+                T.barrier_arrive(free)
+            with T.ws(1):
+                T.barrier_wait(free, 1)
+                T.barrier_arrive(ready)
+
+    return kernel_ws_barrier
+
+
+@tilelang.testing.requires_rocm
+@pytest.mark.parametrize("factory", [_kernel_branch_barrier_codegen, _kernel_ws_barrier_codegen])
+def test_hip_barrier_codegen_lowers_fence_and_mbarriers(factory):
+    """HIP codegen must resolve T.alloc_barrier wait/arrive intrinsics."""
+    src = factory().get_kernel_source()
+    assert "tl.ptx_fence_barrier_init" not in src, (
+        "HIP source still contains unresolved tl.ptx_fence_barrier_init:\n" + src
+    )
+    assert "tl::fence_barrier_init" in src
+    assert "tl::mbarrier_init" in src
+    assert "tl::mbarrier_wait" in src
+    assert "tl::mbarrier_arrive" in src
+
+
 if __name__ == "__main__":
     tilelang.testing.main()

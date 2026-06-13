@@ -253,6 +253,7 @@ std::string CodeGenTileLangHIP::Finish() {
 
   decl_stream << "#include <tl_templates/hip/gemm.h>\n";
   decl_stream << "#include <tl_templates/hip/copy.h>\n";
+  decl_stream << "#include <tl_templates/hip/barrier.h>\n";
   decl_stream << "#include <tl_templates/hip/reduce.h>\n";
   decl_stream << "#include <tl_templates/hip/scan.h>\n";
   decl_stream << "#include <tl_templates/hip/ldsm.h>\n";
@@ -738,8 +739,9 @@ void CodeGenTileLangHIP::PrintStorageScope(const std::string &scope,
   ICHECK_NE(scope, "global")
       << "Cannot allocate global memory when targeting CUDA. You must pass "
          "all global arrays as input instead";
-  if (scope == "shared") {
-    os << "__shared__ ";
+  if (scope == "shared" || scope == "shared.barrier" ||
+      scope == "shared.cluster_barrier") {
+    os << "__shared__ __align__(" << barrier_alignment_bytes_ << ") ";
   } else if (scope == "shared.dyn") {
     os << "extern __shared__ __align__(1024) ";
   }
@@ -1223,6 +1225,8 @@ void CodeGenTileLangHIP::VisitExpr_(const CallNode *op, std::ostream &os) {
     print_extern_call_stmt("tl::mbarrier_arrive_expect_tx");
   } else if (op->op.same_as(builtin::ptx_cp_async_barrier())) {
     print_extern_call_stmt("tl::mbarrier_cp_async_arrive");
+  } else if (op->op.same_as(tl::ptx_fence_barrier_init())) {
+    print_extern_call_stmt("tl::fence_barrier_init");
   } else if (op->op.same_as(tl::mbarrier_expect_tx())) {
     print_extern_call_stmt("tl::mbarrier_expect_tx");
   } else if (op->op.same_as(tl::mbarrier_wait_parity())) {

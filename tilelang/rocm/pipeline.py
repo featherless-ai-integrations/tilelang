@@ -47,6 +47,7 @@ def ROCMPassPipelineBody(mod: IRModule, target: Target) -> IRModule:
     mod = tilelang.transform.HoistNonRestrictParams()(mod)
 
     mod = tilelang.transform.PlanAndUpdateBufferAllocationLocation()(mod)
+    mod = tilelang.cuda.transform.LowerSharedBarrier()(mod)
     mod = tilelang.transform.HoistGlobalBufferAllocations()(mod)
     mod = tilelang.transform.LowerOpaqueBlock()(mod)
     mod = tilelang.transform.Simplify()(mod)
