@@ -14,11 +14,11 @@ from tilelang.cuda.intrinsics.macro.tcgen05_macro_generator import (
 from tilelang import language as T
 from tilelang.utils.language import retrieve_ptr
 from tilelang.transform.simplify import _Simplify
-from tvm import tir
+from tvm import tirx
 from tvm.target import Target
 from tvm.ir import Range
 from tvm.arith import Analyzer
-from typing import Callable
+from collections.abc import Callable
 
 
 _FLOAT8_DTYPES = {
@@ -29,6 +29,13 @@ _FLOAT8_DTYPES = {
     "float8_e5m2fn",
     "float8_e5m2fnuz",
 }
+
+
+def _shared_layout_continuity(buffer, is_k_major: bool, k_extent: int, mn_extent: int) -> int:
+    dtype_bits = buffer.dtype.bits
+    if dtype_bits < 8:
+        return int(buffer.shape[-1]) if is_k_major else mn_extent
+    return k_extent if is_k_major else mn_extent
 
 
 GEMM_INST_TCGEN05 = "cuda.tcgen05"
@@ -43,9 +50,14 @@ class GemmTCGEN5(GemmBase):
     of operands A and B.
     """
 
-    def infer_shared_layout(self, continuity: int) -> Callable[[tir.Buffer], Layout]:
+    @property
+    def allow_f8f6f4_mixed_dtypes(self) -> bool:
+        return True
+
+    def infer_shared_layout(self, buffer: tirx.Buffer, continuity: int) -> Callable[[tirx.Buffer], Layout]:
         """Infer a standard shared-memory swizzle layout for TCGEN05 operands."""
-        vectorized_size = 128 // self.in_dtype.bits
+        elem_bits = buffer.dtype.bits
+        vectorized_size = 128 // elem_bits
         if continuity % (vectorized_size * 8) == 0:
             return make_full_bank_swizzled_layout
         elif continuity % (vectorized_size * 4) == 0:
@@ -70,8 +82,8 @@ class GemmTCGEN5(GemmBase):
         warp_row_tiles = int(self.M // m_warp)
         warp_col_tiles = int(self.N // n_warp)
         mma_emitter = TensorCoreIntrinEmitter(
-            a_dtype=self.in_dtype,
-            b_dtype=self.in_dtype,
+            a_dtype=self.a_dtype,
+            b_dtype=self.b_dtype,
             accum_dtype=self.accum_dtype,
             a_transposed=self.trans_A,
             b_transposed=self.trans_B,
@@ -86,22 +98,23 @@ class GemmTCGEN5(GemmBase):
 
         annotations = getattr(self.gemm_node, "annotations", {})
         use_2cta = bool(annotations.get("use_2cta", 0))
-        mma_emitter.get_tcgen5_mma_meta(self.M, self.N, self.K, disable_2cta=not use_2cta)
+        k = int(self.chunk)
+        mma_emitter.get_tcgen5_mma_meta(int(self.M), int(self.N), k, disable_2cta=not use_2cta, disable_ws=self.is_blockscaled)
 
         if self.is_blockscaled or self.is_gemm_ss():
-            a_continuity = self.K if a_is_k_major else self.M
-            b_continuity = self.K if b_is_k_major else int(self.B.shape[-1])  # don't use N, as it may be for 2cta
+            a_continuity = _shared_layout_continuity(self.A, a_is_k_major, self.K, self.M)
+            b_continuity = _shared_layout_continuity(self.B, b_is_k_major, self.K, int(self.B.shape[-1]))
 
             return {
-                self.A: self.infer_shared_layout(a_continuity)(self.A),
-                self.B: self.infer_shared_layout(b_continuity)(self.B),
+                self.A: self.infer_shared_layout(self.A, a_continuity)(self.A),
+                self.B: self.infer_shared_layout(self.B, b_continuity)(self.B),
                 self.C: mma_emitter.make_mma_store_layout(self.C),
             }
         if self.is_gemm_ts():
-            b_continuity = self.K if b_is_k_major else int(self.B.shape[-1])
+            b_continuity = _shared_layout_continuity(self.B, b_is_k_major, self.K, int(self.B.shape[-1]))
             layouts = {
                 self.A: mma_emitter.make_mma_store_layout(self.A),
-                self.B: self.infer_shared_layout(b_continuity)(self.B),
+                self.B: self.infer_shared_layout(self.B, b_continuity)(self.B),
                 self.C: mma_emitter.make_mma_store_layout(self.C),
             }
             return layouts
@@ -112,8 +125,8 @@ class GemmTCGEN5(GemmBase):
         layout_map: dict,
         target: Target,
         thread_bounds: Range,
-        thread_var: tir.Var,
-        mbar_phase_expr: tir.PrimExpr | None = None,
+        thread_var: tirx.Var,
+        mbar_phase_expr: tirx.PrimExpr | None = None,
     ):
         """Lower the GEMM tile-op into a TIR prim_func containing TCGEN5MMA calls."""
         thread_nums = thread_bounds.extent
@@ -125,8 +138,8 @@ class GemmTCGEN5(GemmBase):
         warp_row_tiles = int(self.M // m_warp)
         warp_col_tiles = int(self.N // n_warp)
         mma_emitter = TensorCoreIntrinEmitter(
-            a_dtype=self.in_dtype,
-            b_dtype=self.in_dtype,
+            a_dtype=self.a_dtype,
+            b_dtype=self.b_dtype,
             accum_dtype=self.accum_dtype,
             a_transposed=self.trans_A,
             b_transposed=self.trans_B,
@@ -150,7 +163,8 @@ class GemmTCGEN5(GemmBase):
 
         annotations = getattr(self.gemm_node, "annotations", {})
         use_2cta = bool(annotations.get("use_2cta", 0))
-        mma_emitter.get_tcgen5_mma_meta(self.M, self.N, self.K, disable_2cta=not use_2cta)
+        k = int(self.chunk)
+        mma_emitter.get_tcgen5_mma_meta(int(self.M), int(self.N), k, disable_2cta=not use_2cta)
         atom_m, atom_n, atom_k, enable_ws, enable_2cta = mma_emitter.meta
 
         if self.A.scope() not in {"shared", "shared.dyn", "shared.tmem"}:
@@ -212,7 +226,7 @@ class GemmTCGEN5(GemmBase):
             else _Simplify(_gemm_ss_cond, inline_let=True)
         )
 
-    def _lower_blockscaled(self, mma_emitter, thread_bounds, thread_var, mbar_phase_expr: tir.PrimExpr | None = None):
+    def _lower_blockscaled(self, mma_emitter, thread_bounds, thread_var, mbar_phase_expr: tirx.PrimExpr | None = None):
         """Lower block-scaled MXFP8 GEMM to TIR.
 
         Block-scaled GEMM follows explicit-async TCGEN5MMA semantics: the MMA
@@ -235,8 +249,7 @@ class GemmTCGEN5(GemmBase):
         clear_accum = self.clear_accum
         SFA_tmem = self.SFARegion.buffer
         SFB_tmem = self.SFBRegion.buffer
-        sf_a_id = self.sf_a_id
-        sf_b_id = self.sf_b_id
+        sf_k_start = self.sf_k_start
         # NOTE: mbar_phase_expr is intentionally unused in the current
         # frontend, which always requests explicit-async semantics. Keep the
         # parameter so the signature matches `_gemm_ss` and the call site in
@@ -245,7 +258,12 @@ class GemmTCGEN5(GemmBase):
 
         annotations = getattr(self.gemm_node, "annotations", {})
         use_2cta = bool(annotations.get("use_2cta", 0))
-        mma_emitter.get_tcgen5_mma_meta(self.M, self.N, self.K, disable_2cta=not use_2cta)
+        sf_a_granularity_k = annotations.get("sf_a_granularity_k")
+        sf_b_granularity_k = annotations.get("sf_b_granularity_k")
+        if sf_a_granularity_k is None or sf_b_granularity_k is None:
+            raise ValueError("Block-scaled GEMM requires sf_a_granularity_k and sf_b_granularity_k")
+        k = int(self.chunk)
+        mma_emitter.get_tcgen5_mma_meta(int(self.M), int(self.N), k, disable_2cta=not use_2cta, disable_ws=True)
         _atom_m, _atom_n, _atom_k, _enable_ws, enable_2cta = (int(x) for x in mma_emitter.meta)
 
         analyzer = Analyzer()
@@ -265,9 +283,10 @@ class GemmTCGEN5(GemmBase):
                     SFA_tmem,
                     SFB_tmem,
                     mbarptr,
-                    clear_accum,
-                    sf_a_id,
-                    sf_b_id,
+                    sf_k_start=sf_k_start,
+                    sf_a_granularity_k=int(sf_a_granularity_k),
+                    sf_b_granularity_k=int(sf_b_granularity_k),
+                    clear_accum=clear_accum,
                 )
 
         @T.prim_func
@@ -280,9 +299,10 @@ class GemmTCGEN5(GemmBase):
                     SFA_tmem,
                     SFB_tmem,
                     mbarptr,
-                    clear_accum,
-                    sf_a_id,
-                    sf_b_id,
+                    sf_k_start=sf_k_start,
+                    sf_a_granularity_k=int(sf_a_granularity_k),
+                    sf_b_granularity_k=int(sf_b_granularity_k),
+                    clear_accum=clear_accum,
                 )
 
         return (

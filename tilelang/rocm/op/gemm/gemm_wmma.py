@@ -9,7 +9,7 @@ from tilelang.utils.language import is_shared, is_fragment, is_full_region
 from tilelang import tvm as tvm
 from tvm.target import Target
 from tvm.ir import Range
-from tvm import tir
+from tvm import tirx
 from tilelang import language as T
 from tilelang.transform.simplify import _Simplify
 
@@ -25,8 +25,8 @@ class GemmWMMA(GemmBase):
         warp_row_tiles = int(self.M // m_warp)
         warp_col_tiles = int(self.N // n_warp)
         return WMMAIntrinEmitter(
-            a_dtype=self.in_dtype,
-            b_dtype=self.in_dtype,
+            a_dtype=self.a_dtype,
+            b_dtype=self.b_dtype,
             accum_dtype=self.accum_dtype,
             a_transposed=self.trans_A,
             b_transposed=self.trans_B,
@@ -71,14 +71,15 @@ class GemmWMMA(GemmBase):
             raise ValueError(f"Unsupported gemm combination, A: {self.A.scope()}, B: {self.B.scope()}")
 
     def lower(
-        self, layout_map: dict, target: Target, thread_bounds: Range, thread_var: tir.Var, mbar_phase_expr: tir.PrimExpr | None = None
+        self, layout_map: dict, target: Target, thread_bounds: Range, thread_var: tirx.Var, mbar_phase_expr: tirx.PrimExpr | None = None
     ):
         thread_nums = thread_bounds.extent
         wmma_emitter = self._make_emitter(target, thread_nums, thread_var=thread_var)
 
         block_K = wmma_emitter.chunk
         micro_size_k = wmma_emitter.micro_size_k
-        in_dtype = self.in_dtype
+        a_dtype = self.a_dtype
+        b_dtype = self.b_dtype
         warp_rows = wmma_emitter.warp_rows
         warp_cols = wmma_emitter.warp_cols
         local_size_a = wmma_emitter.local_size_a
@@ -101,8 +102,8 @@ class GemmWMMA(GemmBase):
 
             @T.prim_func
             def _gemm_ssr() -> None:
-                A_local = T.alloc_local((warp_rows * local_size_a * k_pack), in_dtype)
-                B_local = T.alloc_local((warp_cols * local_size_b * k_pack), in_dtype)
+                A_local = T.alloc_local((warp_rows * local_size_a * k_pack), a_dtype)
+                B_local = T.alloc_local((warp_cols * local_size_b * k_pack), b_dtype)
                 if clear_accum:
                     T.clear(C_buf)
                 for ki in T.serial(0, (block_K // (micro_size_k * k_pack))):
@@ -117,7 +118,7 @@ class GemmWMMA(GemmBase):
 
             @T.prim_func
             def _gemm_srr() -> None:
-                A_local = T.alloc_local((warp_rows * local_size_a * k_pack), in_dtype)
+                A_local = T.alloc_local((warp_rows * local_size_a * k_pack), a_dtype)
                 if clear_accum:
                     T.clear(C_buf)
                 for ki in T.serial(0, (block_K // (micro_size_k * k_pack))):
@@ -131,7 +132,7 @@ class GemmWMMA(GemmBase):
 
             @T.prim_func
             def _gemm_rsr() -> None:
-                B_local = T.alloc_local((warp_cols * local_size_b * k_pack), in_dtype)
+                B_local = T.alloc_local((warp_cols * local_size_b * k_pack), b_dtype)
                 if clear_accum:
                     T.clear(C_buf)
                 for ki in T.serial(0, (block_K // (micro_size_k * k_pack))):

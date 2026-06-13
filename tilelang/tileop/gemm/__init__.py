@@ -1,5 +1,5 @@
 from tilelang import tvm as tvm
-from tvm import tir
+from tvm import tirx
 from tvm.target import Target
 from tvm.ir.base import Node
 from tvm.ir import Range
@@ -21,8 +21,8 @@ def gemm_lower(
     layout_map,
     target: Target,
     thread_bounds: Range,
-    thread_var: tir.Var,
-    mbar_phase_expr: tir.PrimExpr,
+    thread_var: tirx.Var,
+    mbar_phase_expr: tirx.PrimExpr,
 ):
     # We pass thread_bounds rather than thread_extents because tcgen5mma need to check this
     stmt = gemm.lower(layout_map, target, thread_bounds, thread_var, mbar_phase_expr)
@@ -115,12 +115,8 @@ class Gemm(Node, Scriptable):
         return getattr(self, "isTcgen05", False)
 
     @property
-    def sf_a_id(self):
-        return self.sfAId
-
-    @property
-    def sf_b_id(self):
-        return self.sfBId
+    def sf_k_start(self):
+        return self.sfKStart
 
     def infer_layout(self, target: Target, thread_nums: int):
         """Infer the layout for the GEMM operation based on target architecture."""
@@ -133,8 +129,8 @@ class Gemm(Node, Scriptable):
         layout_map: dict,
         target: Target,
         thread_bounds: Range,
-        thread_var: tir.Var,
-        mbar_phase_expr: tir.PrimExpr,
+        thread_var: tirx.Var,
+        mbar_phase_expr: tirx.PrimExpr,
     ):
         """Lower the GEMM operation to TIR statements based on target architecture."""
         thread_nums = thread_bounds.extent
