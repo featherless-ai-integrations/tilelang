@@ -862,6 +862,38 @@ def _kernel_ws_barrier_codegen():
     return kernel_ws_barrier
 
 
+@tilelang.jit(
+    target="hip",
+    pass_configs={
+        "tl.enable_aggressive_shared_memory_merge": True,
+        "tl.disable_data_race_check": True,
+        "tl.disable_shuffle_elect": True,
+    },
+    out_idx=[],
+)
+def _kernel_divergent_barrier_shared_codegen():
+    @T.prim_func
+    def kernel_divergent_barrier_shared(A: T.Tensor((1,), T.float32)):
+        with T.Kernel(1, threads=128):
+            payload = T.alloc_shared((8,), T.float32)
+            topk_scores = T.alloc_shared((4,), T.float32)
+            topk_read_barrier = T.alloc_barrier(arrive_count=64)
+            work_read_barrier = T.alloc_barrier(arrive_count=64)
+            tx = T.get_thread_binding(0)
+            if tx < 64:
+                T.fill(topk_scores, -3.4028234663852886e38)
+                T.barrier_wait(topk_read_barrier, 0)
+                if tx < 4:
+                    topk_scores[tx] = payload[tx]
+                T.barrier_arrive(work_read_barrier)
+            else:
+                if tx < 72:
+                    payload[tx & 7] = T.Cast(T.float32, tx)
+                T.barrier_arrive(topk_read_barrier)
+
+    return kernel_divergent_barrier_shared
+
+
 @tilelang.testing.requires_rocm
 @pytest.mark.parametrize("factory", [_kernel_branch_barrier_codegen, _kernel_ws_barrier_codegen])
 def test_hip_barrier_codegen_lowers_fence_and_mbarriers(factory):
@@ -874,6 +906,16 @@ def test_hip_barrier_codegen_lowers_fence_and_mbarriers(factory):
     assert "tl::mbarrier_init" in src
     assert "tl::mbarrier_wait" in src
     assert "tl::mbarrier_arrive" in src
+
+
+@tilelang.testing.requires_rocm
+def test_hip_barrier_codegen_avoids_divergent_auto_syncthreads():
+    """Mbarrier producer/consumer branches must not get branch-local __syncthreads."""
+    src = _kernel_divergent_barrier_shared_codegen().get_kernel_source()
+    assert src.count("__syncthreads();") == 1, (
+        "Expected only the block-wide sync after mbarrier init. Extra automatic "
+        "__syncthreads() in a producer/consumer branch can deadlock on ROCm:\n" + src
+    )
 
 
 if __name__ == "__main__":

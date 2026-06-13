@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from tvm import IRModule, s_tir, tirx
 from tvm.target import Target
+from tvm.tirx import PrimFunc, SBlock
+from tvm.tirx.stmt_functor import post_order_visit
 
 import tilelang
 from tilelang.backend.pass_pipeline import PassPipeline, register_pipeline
@@ -13,6 +15,22 @@ from tilelang.backend.pass_pipeline.pipeline_utils import (
     should_enable_race_check,
     should_force_let_inline,
 )
+
+
+def _module_has_shared_barrier(mod: IRModule) -> bool:
+    found = False
+
+    def visit(node):
+        nonlocal found
+        if isinstance(node, SBlock):
+            for buffer in node.alloc_buffers:
+                if buffer.scope() in ("shared.barrier", "shared.cluster_barrier"):
+                    found = True
+
+    for _, func in mod.functions.items():
+        if isinstance(func, PrimFunc):
+            post_order_visit(func.body, visit)
+    return found
 
 
 def ROCMPassPipelineBody(mod: IRModule, target: Target) -> IRModule:
@@ -47,6 +65,7 @@ def ROCMPassPipelineBody(mod: IRModule, target: Target) -> IRModule:
     mod = tilelang.transform.HoistNonRestrictParams()(mod)
 
     mod = tilelang.transform.PlanAndUpdateBufferAllocationLocation()(mod)
+    has_shared_barrier = _module_has_shared_barrier(mod)
     mod = tilelang.cuda.transform.LowerSharedBarrier()(mod)
     mod = tilelang.transform.HoistGlobalBufferAllocations()(mod)
     mod = tilelang.transform.LowerOpaqueBlock()(mod)
@@ -77,8 +96,9 @@ def ROCMPassPipelineBody(mod: IRModule, target: Target) -> IRModule:
     disable_reuse = should_disable_shared_memory_reuse(pass_ctx=pass_ctx)
     mod = tilelang.transform.MergeSharedMemoryAllocations(enable_aggressive_merge=enable_aggressive_merge, disable_reuse=disable_reuse)(mod)
 
-    mod = tilelang.transform.ThreadSync("shared")(mod)
-    mod = tilelang.transform.ThreadSync("shared.dyn")(mod)
+    if not has_shared_barrier:
+        mod = tilelang.transform.ThreadSync("shared")(mod)
+        mod = tilelang.transform.ThreadSync("shared.dyn")(mod)
     mod = tilelang.transform.MergeIfStmt()(mod)
     mod = tilelang.transform.MakePackedAPI()(mod)
     mod = tilelang.transform.Simplify()(mod)
