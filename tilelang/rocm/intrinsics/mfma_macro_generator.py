@@ -2,18 +2,16 @@ from __future__ import annotations
 from tilelang import tvm as tvm
 import tilelang.language as T
 from tvm import DataType
-from tvm import tirx
+from tvm import tir
 from tvm.ir import Range
 from tvm.target import Target
-from tvm.tirx import PrimExpr, IndexMap, Buffer, Var, BufferRegion, BufferLoad
+from tvm.tir import PrimExpr, IndexMap, Buffer, Var, BufferRegion, BufferLoad
 from tvm.runtime import convert
 from .utils import mfma_store_index_map
-from typing import Literal
-from collections.abc import Callable
+from typing import Literal, Callable
 import warnings
 
-from tilelang.backend.target import determine_target
-from tilelang.rocm.target import target_is_gfx950
+from tilelang.utils.target import target_is_gfx950, determine_target
 from tilelang.utils import is_fragment
 from tilelang.language.utils import get_buffer_region_from_load
 from .mfma_layout import (
@@ -568,7 +566,7 @@ class MatrixCoreIntrinEmitter:
 
         Parameters
         ----------
-        local_buf : tirx.Buffer
+        local_buf : tir.Buffer
             The local buffer representing a fragment of a matrix.
 
         Returns
@@ -703,7 +701,7 @@ class MatrixCoreIntrinEmitter:
 
         Parameters
         ----------
-        local_buf : tirx.Buffer
+        local_buf : tir.Buffer
             The local buffer representing a fragment of a matrix.
 
         Returns
@@ -779,7 +777,7 @@ class MatrixCoreIntrinEmitter:
         if isinstance(obj, BufferRegion):
             return obj
         if isinstance(obj, Buffer):
-            mins = [tirx.IntImm("int32", 0) for _ in obj.shape]
+            mins = [tir.IntImm("int32", 0) for _ in obj.shape]
             ranges = [Range.from_min_extent(m, e) for m, e in zip(mins, obj.shape)]
             return BufferRegion(obj, ranges)
         if isinstance(obj, BufferLoad):
@@ -788,7 +786,7 @@ class MatrixCoreIntrinEmitter:
                 return region
             # Fallback: scalar load -> 1-sized ranges at indices
             mins = [idx for idx in obj.indices]
-            ones = [tirx.IntImm("int32", 1) for _ in obj.indices]
+            ones = [tir.IntImm("int32", 1) for _ in obj.indices]
             ranges = [Range.from_min_extent(m, e) for m, e in zip(mins, ones)]
             return BufferRegion(obj.buffer, ranges)
         raise ValueError(f"Unsupported argument type for BufferRegion: {type(obj)}")

@@ -7,7 +7,6 @@
 #define TVM_TL_BACKEND_COMMON_OP_FILL_H_
 
 #include "op/fill.h"
-#include <tvm/runtime/logging.h>
 
 #include "op/utils.h"
 #include "transform/loop_partition.h"
@@ -17,7 +16,7 @@ namespace tvm {
 namespace tl {
 namespace backend {
 
-using namespace tirx;
+using namespace tir;
 
 struct Fill {
   static Stmt Lower(const FillNode &op, const LowerArgs &T,

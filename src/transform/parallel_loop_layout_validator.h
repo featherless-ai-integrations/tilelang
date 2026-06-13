@@ -6,17 +6,14 @@
 #ifndef TVM_TL_TRANSFORM_PARALLEL_LOOP_LAYOUT_VALIDATOR_H_
 #define TVM_TL_TRANSFORM_PARALLEL_LOOP_LAYOUT_VALIDATOR_H_
 
-#include "support/check.h"
-#include <tvm/ir/cast.h>
-#include <tvm/runtime/logging.h>
-#include <tvm/tirx/stmt_functor.h>
+#include <tvm/tir/stmt_functor.h>
 
 #include "../layout/layout.h"
 
 namespace tvm {
 namespace tl {
 
-using namespace tirx;
+using namespace tir;
 
 /*!
  * \brief Count the number of consecutive nested parallel loops starting from

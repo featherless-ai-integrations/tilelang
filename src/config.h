@@ -6,7 +6,6 @@
 #ifndef TVM_TL_CONFIG_H_
 #define TVM_TL_CONFIG_H_
 
-#include <tvm/ffi/optional.h>
 #include <tvm/ir/transform.h>
 
 namespace tvm {
@@ -19,7 +18,7 @@ namespace tl_config {
 inline bool VectorizePlannerVerboseEnabled() {
   auto ctxt = transform::PassContext::Current();
   return ctxt
-      ->GetConfig("tl.enable_vectorize_planner_verbose", ffi::Optional<Bool>())
+      ->GetConfig("tl.enable_vectorize_planner_verbose", Optional<Bool>())
       .value_or(Bool(false));
 }
 
@@ -28,7 +27,7 @@ inline bool VectorizePlannerVerboseEnabled() {
  */
 inline bool Vectorize256Disabled() {
   auto ctxt = transform::PassContext::Current();
-  return ctxt->GetConfig("tl.disable_vectorize_256", ffi::Optional<Bool>())
+  return ctxt->GetConfig("tl.disable_vectorize_256", Optional<Bool>())
       .value_or(Bool(false));
 }
 

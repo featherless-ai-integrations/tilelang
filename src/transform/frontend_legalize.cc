@@ -22,17 +22,17 @@
  * \brief Legalize the program from frontend
  */
 
-#include "support/check.h"
-#include <tvm/tirx/op.h>
-#include <tvm/tirx/stmt_functor.h>
-#include <tvm/tirx/transform.h>
+#include <tvm/ffi/reflection/registry.h>
+#include <tvm/tir/op.h>
+#include <tvm/tir/stmt_functor.h>
+#include <tvm/tir/transform.h>
 
 #include "arith/ir_mutator_with_analyzer.h"
 
 namespace tvm {
 namespace tl {
 
-using namespace tirx;
+using namespace tir;
 
 class LetInliner : public arith::IRMutatorWithAnalyzer {
 public:
@@ -66,9 +66,9 @@ private:
     }
   }
 
-  Stmt VisitStmt_(const BindNode *node) final {
+  Stmt VisitStmt_(const LetStmtNode *node) final {
     let_bindings_[node->var.get()] = node->value;
-    return Evaluate(Integer(0));
+    return arith::IRMutatorWithAnalyzer::VisitStmt(node->body);
   }
 
   PrimExpr VisitExpr_(const LetNode *node) final {
@@ -80,7 +80,7 @@ private:
   std::unordered_map<const VarNode *, PrimExpr> let_bindings_;
 };
 
-using namespace tirx::transform;
+using namespace tir::transform;
 
 Pass LetInline() {
   auto pass_func = [=](PrimFunc f, const IRModule &m, const PassContext &ctx) {

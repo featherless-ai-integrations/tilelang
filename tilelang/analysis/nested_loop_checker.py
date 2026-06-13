@@ -1,11 +1,11 @@
-from tvm import tirx
-from tvm.tirx import (
+from tvm import tir
+from tvm.tir import (
     For,
     Call,
     PrimFunc,
     PyStmtExprVisitor,
 )
-from tvm.tirx.transform import prim_func_pass
+from tvm.tir.transform import prim_func_pass
 
 
 def is_pipelined_for(op: For) -> bool:
@@ -21,18 +21,18 @@ def is_tile_op(op: Call) -> bool:
     return op.op.get_attr("TLOpBuilder") is not None
 
 
-@tirx.functor.visitor
+@tir.functor.visitor
 class _NestedLoopCheckVisitor(PyStmtExprVisitor):
     def __init__(self) -> None:
         super().__init__()
         self.in_parallel_context = False
 
     def visit_for_(self, op: For) -> None:
-        if op.kind == tirx.ForKind.PARALLEL:
+        if op.kind == tir.ForKind.PARALLEL:
             child = op.body
 
             # Special case: continuous nested parallel loop is allowed.
-            if isinstance(child, tirx.For) and child.kind == tirx.ForKind.PARALLEL:
+            if isinstance(child, tir.For) and child.kind == tir.ForKind.PARALLEL:
                 self.visit_stmt(child)
                 return
 

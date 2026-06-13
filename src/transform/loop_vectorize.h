@@ -27,12 +27,12 @@
 
 #include "../op/operator.h"
 #include <tvm/arith/analyzer.h>
-#include <tvm/tirx/op.h>
+#include <tvm/tir/op.h>
 
 namespace tvm {
 namespace tl {
 
-using namespace tirx;
+using namespace tir;
 
 int GetVectorizeSize(const For &loop, const LayoutMap &layout_map = {});
 

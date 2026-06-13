@@ -1,6 +1,5 @@
 from __future__ import annotations
 import importlib.metadata
-import math
 import sys
 import os
 import pathlib
@@ -8,11 +7,8 @@ import logging
 import shutil
 import glob
 from dataclasses import dataclass
-from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
-
-EnvVarDefault = str | None | Callable[[], str | None]
 
 # SETUP ENVIRONMENT VARIABLES
 CUTLASS_NOT_FOUND_MESSAGE = "CUTLASS is not installed or found in the expected path"
@@ -251,18 +247,13 @@ class EnvVar:
     """
 
     key: str  # Environment variable name (e.g. "TILELANG_PRINT_ON_COMPILATION")
-    default: EnvVarDefault  # Default value if the environment variable is not set
+    default: str  # Default value if the environment variable is not set
     _forced_value: str | None = None  # Temporary runtime override (mainly for tests/debugging)
-
-    def _get_default(self):
-        return self.default() if callable(self.default) else self.default
 
     def get(self):
         if self._forced_value is not None:
             return self._forced_value
-        if self.key in os.environ:
-            return os.environ[self.key]
-        return self._get_default()
+        return os.environ.get(self.key, self.default)
 
     def __get__(self, instance, owner):
         """
@@ -310,7 +301,7 @@ class Environment:
     # TileLang resources
     TILELANG_TEMPLATE_PATH = EnvVar("TL_TEMPLATE_PATH", None)
     TILELANG_CACHE_DIR = EnvVar("TILELANG_CACHE_DIR", os.path.expanduser("~/.tilelang/cache"))
-    TILELANG_TMP_DIR = EnvVar("TILELANG_TMP_DIR", lambda: os.path.join(Environment.TILELANG_CACHE_DIR, "tmp"))
+    TILELANG_TMP_DIR = EnvVar("TILELANG_TMP_DIR", os.path.join(TILELANG_CACHE_DIR.get(), "tmp"))
 
     # Kernel Build options
     TILELANG_PRINT_ON_COMPILATION = EnvVar("TILELANG_PRINT_ON_COMPILATION", "1")  # print kernel name on compile
@@ -319,11 +310,8 @@ class Environment:
     )  # disable kernel cache, usually for unit testing / debugging, high priority
     TILELANG_CLEAR_CACHE = EnvVar("TILELANG_CLEAR_CACHE", "0")  # DEPRECATED! clear cache automatically if set
     TILELANG_CLEANUP_TEMP_FILES = EnvVar(
-        "TILELANG_CLEANUP_TEMP_FILES", "1"
-    )  # cleanup temporary compiler files/dirs after compilation (set to 0 to keep for debugging)
-    TILELANG_HIP_SAVE_TEMP_FILES = EnvVar("TILELANG_HIP_SAVE_TEMP_FILES", "0")  # save temporary files for HIP compilation
-    TILELANG_JIT_DIAGNOSTICS = EnvVar("TILELANG_JIT_DIAGNOSTICS", "0")  # enable JIT phase diagnostics
-    TILELANG_COMPILE_TIMEOUT_SECONDS = EnvVar("TILELANG_COMPILE_TIMEOUT_SECONDS", "")  # optional NVCC subprocess timeout in seconds
+        "TILELANG_CLEANUP_TEMP_FILES", "0"
+    )  # cleanup temporary compiler files/dirs after compilation (default: keep for debugging)
 
     # Auto-tuning settings
     TILELANG_AUTO_TUNING_DISABLE_CACHE = EnvVar("TILELANG_AUTO_TUNING_DISABLE_CACHE", "0")
@@ -347,7 +335,7 @@ class Environment:
         to ensure PyTorch extensions are built for the proper GPU arch.
         """
         from tilelang.contrib import nvcc
-        from tilelang.backend.target import determine_target
+        from tilelang.utils.target import determine_target
 
         target = determine_target(return_object=True)  # get target GPU
         compute_version = nvcc.get_target_compute_version(target)  # e.g. "8.6"
@@ -375,21 +363,6 @@ class Environment:
 
     def should_cleanup_temp_files(self) -> bool:
         return str(self.TILELANG_CLEANUP_TEMP_FILES).lower() in ("1", "true", "yes", "on")
-
-    def is_jit_diagnostics_enabled(self) -> bool:
-        return str(self.TILELANG_JIT_DIAGNOSTICS).lower() in ("1", "true", "yes", "on")
-
-    def get_compile_timeout_seconds(self) -> float | None:
-        value = str(self.TILELANG_COMPILE_TIMEOUT_SECONDS).strip()
-        if not value:
-            return None
-        try:
-            timeout = float(value)
-        except ValueError as exc:
-            raise ValueError("TILELANG_COMPILE_TIMEOUT_SECONDS must be empty or a non-negative number") from exc
-        if not math.isfinite(timeout) or timeout < 0:
-            raise ValueError("TILELANG_COMPILE_TIMEOUT_SECONDS must be empty or a non-negative number")
-        return timeout if timeout > 0 else None
 
     def get_default_target(self) -> str:
         """Get default compilation target from environment."""
@@ -529,4 +502,3 @@ if os.environ.get("TL_TEMPLATE_PATH", None) is None:
 CUTLASS_INCLUDE_DIR = env.CUTLASS_INCLUDE_DIR
 COMPOSABLE_KERNEL_INCLUDE_DIR = env.COMPOSABLE_KERNEL_INCLUDE_DIR
 TILELANG_TEMPLATE_PATH = env.TILELANG_TEMPLATE_PATH
-TILELANG_HIP_SAVE_TEMP_FILES = env.TILELANG_HIP_SAVE_TEMP_FILES

@@ -6,18 +6,19 @@
 #ifndef TVM_TL_LAYOUT_LAYOUT_H_
 #define TVM_TL_LAYOUT_LAYOUT_H_
 
-#include "support/check.h"
 #include <exception>
 #include <tvm/arith/analyzer.h>
 #include <tvm/arith/iter_affine_map.h>
-#include <tvm/tirx/buffer.h>
+#include <tvm/ffi/object.h>
+#include <tvm/tir/buffer.h>
 #include <utility>
+
+#include "../support/ffi_aliases.h"
 
 namespace tvm {
 namespace tl {
 
-using namespace tirx;
-using namespace ffi;
+using namespace tir;
 
 // Common layout-related exceptions
 class LayoutConflictException : public std::exception {
@@ -96,8 +97,7 @@ public:
                          const PrimExpr rescale_num = Integer(1),
                          const PrimExpr rescale_den = Integer(1)) const;
 
-  virtual std::pair<Layout, arith::IterMapLevel>
-  InverseWithLevel(bool require_padding_guard = false) const;
+  virtual std::pair<Layout, arith::IterMapLevel> InverseWithLevel() const;
 
   virtual std::string DebugOutput() const;
 
@@ -143,8 +143,7 @@ public:
                  const PrimExpr rescale_num = Integer(1),
                  const PrimExpr rescale_den = Integer(1)) const;
 
-  std::pair<Layout, arith::IterMapLevel>
-  InverseWithLevel(bool require_padding_guard = false) const final;
+  std::pair<Layout, arith::IterMapLevel> InverseWithLevel() const final;
 
   PrimExpr ThreadExtent() const;
 
@@ -172,8 +171,7 @@ public:
 
   bool IsCompletedReplicated() const;
 
-  arith::IterMapResult
-  DetectInjective(bool require_padding_guard = false) const;
+  arith::IterMapResult DetectInjective() const;
 
   static void RegisterReflection();
 
@@ -312,9 +310,6 @@ constexpr const char *kLayoutMap = "layout_map";
 constexpr const char *kParallelLoopLayout = "parallel_loop_layout";
 // ForAttr, Containing the predicate for a parallel for loop
 constexpr const char *kParallelLoopPredicate = "parallel_loop_predicate";
-// ForAttr, Marks a ragged SIMT loop layout that needs guarded inverse lowering
-constexpr const char *kParallelLoopRequiresPaddingGuard =
-    "parallel_loop_requires_padding_guard";
 // ForAttr, Width (in elements) for coalesced memory access
 constexpr const char *kCoalescedWidth = "coalesced_width";
 } // namespace attr

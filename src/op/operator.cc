@@ -5,18 +5,16 @@
  */
 
 #include "operator.h"
-#include "support/check.h"
-#include <tvm/runtime/logging.h>
 
 #include "builtin.h"
 
-#include <tvm/tirx/builtin.h>
-#include <tvm/tirx/op_attr_types.h>
+#include <tvm/tir/builtin.h>
+#include <tvm/tir/op_attr_types.h>
 
 namespace tvm {
 namespace tl {
 
-using namespace tirx;
+using namespace tir;
 
 /**
  * @brief Construct a TileOperator from a TIR Call using a registered builder.

@@ -4,16 +4,12 @@
  */
 
 #include "gemm.h"
-#include "support/check.h"
-#include <tvm/ir/cast.h>
-#include <tvm/runtime/logging.h>
-#include <tvm/tirx/stmt.h>
 
 #include "builtin.h"
-#include <tvm/tirx/builtin.h>
-#include <tvm/tirx/function.h>
-#include <tvm/tirx/op.h>
-#include <tvm/tirx/op_attr_types.h>
+#include <tvm/tir/builtin.h>
+#include <tvm/tir/function.h>
+#include <tvm/tir/op.h>
+#include <tvm/tir/op_attr_types.h>
 
 #include "utils.h"
 
@@ -22,8 +18,7 @@
 namespace tvm {
 namespace tl {
 
-using namespace tirx;
-using namespace ffi;
+using namespace tir;
 
 namespace {
 
@@ -39,7 +34,7 @@ const GemmImpl &ResolveGemmImpl(Target target) {
     if (impl.match_target(target)) {
       ICHECK(matched_impl == nullptr)
           << "tl.gemm found multiple target-specific implementations for "
-          << target->str() << ": " << matched_impl->name << " and "
+          << target->ToDebugString() << ": " << matched_impl->name << " and "
           << impl.name;
       matched_impl = &impl;
     }
@@ -47,7 +42,7 @@ const GemmImpl &ResolveGemmImpl(Target target) {
   ICHECK(matched_impl != nullptr)
       << "tl.gemm requires a target-specific implementation, but no gemm "
          "implementation is registered for "
-      << target->str();
+      << target->ToDebugString();
   return *matched_impl;
 }
 
@@ -59,6 +54,7 @@ void RegisterGemmImpl(GemmImpl impl) {
   ICHECK(impl.select_inst != nullptr);
   ICHECK(impl.compute_warp_partition != nullptr);
   ICHECK(impl.reuse_existing_shared_layout != nullptr);
+  ICHECK(impl.instruction_kind != nullptr);
   GemmImplRegistry().push_back(impl);
 }
 
@@ -79,7 +75,7 @@ void RegisterGemmImpl(GemmImpl impl) {
  *      (optional) mbar (BufferLoad), cCoord_y (PrimExpr), cCoord_x (PrimExpr)]
  */
 Gemm::Gemm(Array<PrimExpr> args, Map<String, ObjectRef> annotations) {
-  ObjectPtr<GemmNode> node = make_object<GemmNode>();
+  ObjectPtr<GemmNode> node = tvm::ffi::make_object<GemmNode>();
 
   auto a_access = NormalizeToAccessRegion(args[0], kAccessRead);
   auto b_access = NormalizeToAccessRegion(args[1], kAccessRead);
@@ -135,7 +131,10 @@ Gemm::Gemm(Array<PrimExpr> args, Map<String, ObjectRef> annotations) {
     node->sfbRegion_ = NormalizeToBufferRegion(args[20]);
   }
   if (args.size() > 21) {
-    node->sfKStart_ = args[21].as<PrimExpr>().value();
+    node->sfAId_ = args[21].as<PrimExpr>().value();
+  }
+  if (args.size() > 22) {
+    node->sfBId_ = args[22].as<PrimExpr>().value();
   }
   node->annotations_ = annotations;
   data_ = std::move(node);
@@ -159,12 +158,17 @@ AccessRegions GemmNode::GetAccessRegions() const {
 }
 
 TileOperator GemmNode::Clone() const {
-  auto op = make_object<GemmNode>(*this);
+  auto op = tvm::ffi::make_object<GemmNode>(*this);
   return Gemm(op);
 }
 
 String GemmNode::getGemmInstructionKey(int block_size, Target target) const {
   return ResolveGemmImpl(target).select_inst(*this, block_size, target);
+}
+
+String GemmNode::getGemmInstructionKind(int block_size, Target target) const {
+  const GemmImpl &impl = ResolveGemmImpl(target);
+  return impl.instruction_kind(impl.select_inst(*this, block_size, target));
 }
 
 std::pair<int, int> GemmWarpPolicyNode::computeWarpPartition(
@@ -174,43 +178,44 @@ std::pair<int, int> GemmWarpPolicyNode::computeWarpPartition(
 }
 
 Stmt GemmNode::Lower(const LowerArgs &T, arith::Analyzer *analyzer) const {
-  if (const auto f = Function::GetGlobal("tl.gemm.lower")) {
+  if (const auto f = ffi::Function::GetGlobal("tl.gemm.lower")) {
     PrimExpr mbar_phase = T.mbar_phase_expr;
     if (auto explicit_phase = GetAnnotatedMbarPhaseExpr(annotations_)) {
       mbar_phase = explicit_phase.value();
     }
     // NOTE(wt): Decide the instruction key and compute warp partition on Python
     // side.
-    auto prim_func =
-        Downcast<PrimFunc>((*f)(GetRef<Gemm>(this), T.layout_map, T.target,
-                                T.thread_bounds, T.thread_var, mbar_phase));
+    auto prim_func = Downcast<PrimFunc>(
+        (*f)(tvm::ffi::GetRef<Gemm>(this), T.layout_map, T.target,
+             T.thread_bounds, T.thread_var, mbar_phase));
     ICHECK(prim_func->attrs.defined());
-    auto global_symbol = prim_func->attrs.GetAttr<String>("global_symbol");
+    auto global_symbol =
+        prim_func->attrs.GetAttr<tvm::ffi::String>("global_symbol");
     ICHECK(global_symbol.has_value());
-    if (prim_func->body.as<SBlockRealizeNode>()) {
-      SBlockRealize block_realize = Downcast<SBlockRealize>(prim_func->body);
+    if (prim_func->body.as<BlockRealizeNode>()) {
+      BlockRealize block_realize = Downcast<BlockRealize>(prim_func->body);
       auto block = block_realize->block;
       {
-        SBlockNode *n = block.CopyOnWrite();
+        BlockNode *n = block.CopyOnWrite();
         n->name_hint = global_symbol.value();
         n->annotations.Set(tl::attr::kLexicalAllocScope,
                            IntImm(DataType::Int(32), 1));
       }
-      return SBlockRealize(block_realize->iter_values, block_realize->predicate,
-                           block);
+      return BlockRealize(block_realize->iter_values, block_realize->predicate,
+                          block);
     }
     // wrap with block realize node
     Map<String, ObjectRef> block_annotations;
     block_annotations.Set(tl::attr::kLexicalAllocScope,
                           IntImm(DataType::Int(32), 1));
-    return SBlockRealize(
+    return BlockRealize(
         /*iter_values=*/Array<PrimExpr>(),
         /*predicate=*/const_true(),
         /*block=*/
-        SBlock(/*iter_vars=*/{}, /*reads=*/{}, /*writes=*/{},
-               /*name_hint=*/global_symbol.value(), prim_func->body,
-               /*init=*/Optional<Stmt>(), /*alloc_buffers=*/{},
-               /*match_buffers=*/{}, /*annotations=*/block_annotations));
+        Block(/*iter_vars=*/{}, /*reads=*/{}, /*writes=*/{},
+              /*name_hint=*/global_symbol.value(), prim_func->body,
+              /*init=*/Optional<Stmt>(), /*alloc_buffers=*/{},
+              /*match_buffers=*/{}, /*annotations=*/block_annotations));
   } else {
     LOG(FATAL) << "No lower function found for gemm";
     return Stmt();
@@ -222,9 +227,9 @@ LayoutMap GemmNode::InferLayout(const LayoutInferArgs &T,
   if (completed_)
     return {};
   LayoutMap results;
-  if (const auto f = Function::GetGlobal("tl.gemm.infer_layout")) {
+  if (const auto f = ffi::Function::GetGlobal("tl.gemm.infer_layout")) {
     auto inferred_layouts = Downcast<LayoutMap>(
-        (*f)(GetRef<Gemm>(this), T.target, T.thread_bounds));
+        (*f)(tvm::ffi::GetRef<Gemm>(this), T.target, T.thread_bounds));
     // For MMA instructions, skip shared buffer layouts that are already
     // inferred by a prior operator to avoid layout conflicts when the same
     // shared buffer is consumed by multiple gemm ops with different transpose
@@ -256,7 +261,7 @@ LayoutMap GemmNode::InferLayout(const LayoutInferArgs &T,
 }
 
 TIR_REGISTER_TL_TILE_OP(Gemm, gemm)
-    .set_num_inputs(-1)
+    .set_num_inputs(5)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
@@ -270,7 +275,7 @@ TVM_REGISTER_OP("tl.tileop.wgmma_gemm")
                                        IntImm(DataType::Int(32), 1));
                                return Gemm(args, ann);
                              })
-    .set_num_inputs(-1)
+    .set_num_inputs(5)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
@@ -284,7 +289,7 @@ TVM_REGISTER_OP("tl.tileop.tcgen05_gemm")
                                        IntImm(DataType::Int(32), 1));
                                return Gemm(args, ann);
                              })
-    .set_num_inputs(-1)
+    .set_num_inputs(5)
     .set_attr<TCallEffectKind>("TCallEffectKind",
                                Integer(CallEffectKind::kOpaque));
 
@@ -294,7 +299,10 @@ TVM_REGISTER_OP("tl.GemmWarpPolicy")
 TVM_FFI_STATIC_INIT_BLOCK() {
   GemmNode::RegisterReflection();
   GemmWarpPolicyNode::RegisterReflection();
-  namespace refl = reflection;
+}
+
+TVM_FFI_STATIC_INIT_BLOCK() {
+  namespace refl = tvm::ffi::reflection;
   refl::GlobalDef().def("tl.GemmWarpPolicyComputeWarpPartition",
                         [](GemmWarpPolicy policy, int M, int N, int block_size,
                            Target target, String gemm_inst) {

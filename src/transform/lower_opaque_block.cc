@@ -21,14 +21,10 @@
  * \file lower_opaque_block.cc
  */
 
-#include "support/check.h"
+#include <tvm/ffi/reflection/registry.h>
 #include <tvm/ir/attrs.h>
-#include <tvm/ir/cast.h>
-#include <tvm/runtime/logging.h>
-#include <tvm/s_tir/stmt.h>
-#include <tvm/tirx/stmt.h>
-#include <tvm/tirx/stmt_functor.h>
-#include <tvm/tirx/transform.h>
+#include <tvm/tir/stmt_functor.h>
+#include <tvm/tir/transform.h>
 
 #include <string>
 #include <utility>
@@ -40,9 +36,8 @@
 namespace tvm {
 namespace tl {
 
-using namespace tirx;
-using namespace ffi;
-using namespace tirx::attr;
+using namespace tir;
+using namespace tir::attr;
 /*!
  * \brief Remove Block to ensure that the TIR can not be scheduled again.
  */
@@ -68,13 +63,13 @@ public:
   }
 
 private:
-  Stmt VisitStmt_(const SBlockRealizeNode *op) final {
+  Stmt VisitStmt_(const BlockRealizeNode *op) final {
     // We have convert blocks into opaque blocks in previous passes.
     ICHECK(op->iter_values.empty())
         << "Non-opaque blocks are not allowed in FlattenBuffer. Please "
            "call pass ConvertBlocksToOpaque before.";
     // Step 1. Visit the body
-    SBlock new_block = Downcast<SBlock>(this->VisitStmt(op->block));
+    Block new_block = Downcast<Block>(this->VisitStmt(op->block));
     PrimExpr predicate = this->VisitExpr(op->predicate);
     // Step 2. Transform the `predicate` to if-then-else
     Stmt body = new_block->body;
@@ -91,8 +86,8 @@ private:
     for (size_t i = new_block->alloc_buffers.size(); i > 0; --i) {
       const Buffer &buffer = new_block->alloc_buffers[i - 1];
       Array<PrimExpr> allocation_shape = GetBufferAllocationShape(buffer);
-      body = SeqStmt({DeclBuffer(buffer), std::move(body)});
-      Map<String, Any> allocate_annotations;
+      body = DeclBuffer(buffer, std::move(body));
+      Map<String, ffi::Any> allocate_annotations;
       auto it = storage_align_.find(buffer->data);
       if (it != storage_align_.end()) {
         StorageAlignAnnotation allocate_aligns;
@@ -100,25 +95,19 @@ private:
           tuple.Set<0>(-1);
           allocate_aligns.push_back(tuple);
         }
-        allocate_annotations.Set(s_tir::attr::buffer_dim_align,
-                                 allocate_aligns);
+        allocate_annotations.Set(tir::attr::buffer_dim_align, allocate_aligns);
       }
       auto init_it = local_var_init_map_.find(buffer->data);
       if (init_it != local_var_init_map_.end()) {
         const PrimExpr &init = (*init_it).second;
         allocate_annotations.Set(tl::attr::kLocalVarInit, init);
       }
-      // Use AllocBuffer with annotations; buffer already carries shape info
-      Buffer alloc_buf(buffer->data, buffer->dtype, allocation_shape,
-                       buffer->strides, buffer->elem_offset, buffer->name,
-                       buffer->data_alignment, buffer->offset_factor,
-                       buffer->buffer_type);
-      body = SeqStmt(
-          {AllocBuffer(alloc_buf, allocate_annotations), std::move(body)});
+      body = Allocate(buffer->data, buffer->dtype, allocation_shape,
+                      const_true(), std::move(body), allocate_annotations);
     }
     // Step 5. Materialize a lexical scope boundary only for blocks that were
     // explicitly marked by an earlier semantic lowering pass (for example
-    // gemm/gemm_sp). We intentionally avoid re-inferring this from the
+    // gemm/gemm_sp_py). We intentionally avoid re-inferring this from the
     // lowered alloc_buffers here because provenance has already been blurred by
     // earlier allocation planning/hoisting passes.
     if (HasLexicalAllocScopeAnnotation(new_block->annotations)) {
@@ -131,8 +120,8 @@ private:
     }
     return body;
   }
-  Stmt VisitStmt_(const SBlockNode *op) final {
-    SBlock block = Downcast<SBlock>(StmtExprMutator::VisitStmt_(op));
+  Stmt VisitStmt_(const BlockNode *op) final {
+    Block block = Downcast<Block>(StmtExprMutator::VisitStmt_(op));
     if (block->annotations.count("stmt_group")) {
       return block->body;
     }
@@ -151,7 +140,7 @@ private:
     Stmt body = this->VisitStmt(op->body);
     // Step 3. Handle annotations
     std::vector<std::pair<std::string, PrimExpr>> pragma_attrs;
-    Map<String, Any> new_annotations =
+    Map<String, ffi::Any> new_annotations =
         HandleAnnotations(op->annotations, &pragma_attrs, /*is_block=*/false);
     // Step 4. Create new For loop accordingly
     if (op->kind == ForKind::kThreadBinding) {
@@ -178,12 +167,13 @@ private:
   // Treat annotations as empty if they are truly empty or contain only
   // the unroll hint `pragma_unroll_explicit`. This allows unit-length
   // loops produced by unroll pragmas to be simplified away.
-  bool IsEffectivelyEmptyAnnotation(const Map<String, Any> &annotations) const {
+  bool
+  IsEffectivelyEmptyAnnotation(const Map<String, ffi::Any> &annotations) const {
     if (annotations.empty()) {
       return true;
     }
     if (annotations.size() == 1) {
-      auto it = annotations.find(tirx::attr::pragma_unroll_explicit);
+      auto it = annotations.find(tir::attr::pragma_unroll_explicit);
       if (it != annotations.end()) {
         return true;
       }
@@ -192,7 +182,7 @@ private:
   }
 
   PrimExpr VisitExpr_(const VarNode *op) final {
-    Var var = GetRef<Var>(op);
+    Var var = tvm::ffi::GetRef<Var>(op);
     auto it = unit_loop_vars_.find(var);
     if (it == unit_loop_vars_.end()) {
       return var;
@@ -214,8 +204,8 @@ private:
                      /*thread_tag=*/thread_tag);
     String attr_key = (thread_tag == "vthread" || thread_tag == "vthread.x" ||
                        thread_tag == "vthread.y" || thread_tag == "vthread.z")
-                          ? s_tir::attr::virtual_thread
-                          : tirx::attr::thread_extent;
+                          ? tir::attr::virtual_thread
+                          : tir::attr::thread_extent;
     return AttrStmt(/*node=*/std::move(iter_var),
                     /*attr_key=*/std::move(attr_key),
                     /*value=*/std::move(extent),
@@ -246,16 +236,16 @@ private:
    * \return New annotation dict with preserved keys. Also update pragma attr
    * pairs ordered by key.
    */
-  Map<String, Any>
-  HandleAnnotations(const Map<String, Any> &annotations,
+  Map<String, ffi::Any>
+  HandleAnnotations(const Map<String, ffi::Any> &annotations,
                     std::vector<std::pair<std::string, PrimExpr>> *pragma_attrs,
                     bool is_block,
                     const Array<Buffer> &alloc_buffers = Array<Buffer>()) {
-    Map<String, Any> preserved_annotations;
+    Map<String, ffi::Any> preserved_annotations;
     pragma_attrs->clear();
     for (const auto &kv : annotations) {
       const String &key = kv.first;
-      if (tirx::attr::IsPragmaKey(key) || tl::attr::IsCodeBlockKey(key)) {
+      if (tir::attr::IsPragmaKey(key) || tl::attr::IsCodeBlockKey(key)) {
         pragma_attrs->emplace_back(key, ConvertAttrValue(key, kv.second));
       } else if (key == tl::attr::kLocalVarInit) {
         if (auto local_init_map = kv.second.try_cast<Map<Var, PrimExpr>>()) {
@@ -297,7 +287,7 @@ private:
   }
 
   static bool
-  HasLexicalAllocScopeAnnotation(const Map<String, Any> &annotations) {
+  HasLexicalAllocScopeAnnotation(const Map<String, ffi::Any> &annotations) {
     return annotations.find(tl::attr::kLexicalAllocScope) != annotations.end();
   }
 
@@ -336,8 +326,8 @@ PrimFunc TLLowerOpaqueBlock(PrimFunc f) {
   return OpaqueBlockLower::Rewrite(std::move(f));
 }
 
-tirx::transform::Pass LowerOpaqueBlock() {
-  using namespace tirx::transform;
+tir::transform::Pass LowerOpaqueBlock() {
+  using namespace tir::transform;
   auto pass_func = [=](PrimFunc f, const IRModule &m, const PassContext &ctx) {
     return TLLowerOpaqueBlock(std::move(f));
   };
@@ -345,7 +335,7 @@ tirx::transform::Pass LowerOpaqueBlock() {
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
-  namespace refl = reflection;
+  namespace refl = tvm::ffi::reflection;
   refl::GlobalDef().def("tl.transform.LowerOpaqueBlock", LowerOpaqueBlock);
 }
 

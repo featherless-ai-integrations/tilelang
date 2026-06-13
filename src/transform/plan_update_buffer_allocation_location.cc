@@ -22,41 +22,34 @@
  * \file plan_update_buffer_allocation_location.cc
  */
 
-#include "support/check.h"
-#include <tvm/ir/cast.h>
-#include <tvm/s_tir/analysis.h>
-#include <tvm/tirx/analysis.h>
-#include <tvm/tirx/stmt.h>
-#include <tvm/tirx/stmt_functor.h>
-#include <tvm/tirx/transform.h>
-#include <tvm/tirx/var.h>
+#include <tvm/ffi/reflection/registry.h>
+#include <tvm/tir/analysis.h>
+#include <tvm/tir/stmt_functor.h>
+#include <tvm/tir/transform.h>
+#include <tvm/tir/var.h>
 
 #include "../op/utils.h"
 #include "tir/transforms/ir_utils.h"
 
 // Forward-declare tir's var-level LCA helper which has no public header.
 namespace tvm {
-namespace tirx {
-using namespace ffi;
-
-Map<Var, Optional<Stmt>> DetectBufferVarAccessLCA(const PrimFunc &func);
-} // namespace tirx
+namespace tir {
+ffi::Map<Var, ffi::Optional<Stmt>>
+DetectBufferVarAccessLCA(const PrimFunc &func);
+}
 } // namespace tvm
 
 namespace tvm {
 namespace tl {
 
-using namespace tirx;
-using namespace ffi;
-using namespace tirx::transform;
-using tirx::SBlockNode;
-using tirx::SBlockRealizeNode;
+using namespace tir;
+using namespace tir::transform;
 
 // Use TVM's tir analysis API for LCA detection.
 
 class CollectManagedAllocations : public StmtExprVisitor {
 public:
-  void VisitStmt_(const SBlockNode *op) final {
+  void VisitStmt_(const BlockNode *op) final {
     for (const auto &buf : op->alloc_buffers) {
       managed_allocations.insert(buf->data.get());
     }
@@ -66,15 +59,15 @@ public:
     StmtExprVisitor::VisitStmt_(op);
   }
 
-  /*! \brief Buffers that are allocated outside of the SBlockNode, and should
-   * not be moved by BufferAllocationLocator. */
+  /*! \brief Buffers that are allocated outside of the BlockNode, and should not
+   * be moved by BufferAllocationLocator. */
   std::unordered_set<const VarNode *> managed_allocations;
 };
 
 /*! \brief Collect the allocate buffer order. */
 class BufferAllocateOrderCollector : public StmtExprVisitor {
 public:
-  static Array<Buffer> Collect(const PrimFunc &func) {
+  static ffi::Array<Buffer> Collect(const PrimFunc &func) {
     BufferAllocateOrderCollector collector;
     for (const auto &kv : func->buffer_map) {
       collector.buffer_alloc_recorder_.push_back(kv.second);
@@ -90,7 +83,7 @@ private:
                      buf) != buffer_alloc_recorder_.end();
   }
 
-  void VisitStmt_(const SBlockNode *op) final {
+  void VisitStmt_(const BlockNode *op) final {
     for (const Buffer &buffer : op->alloc_buffers) {
       buffer_alloc_recorder_.push_back(buffer);
     }
@@ -121,7 +114,7 @@ private:
   }
 
   /*! \brief The buffer allocated order recorder. */
-  Array<Buffer> buffer_alloc_recorder_;
+  ffi::Array<Buffer> buffer_alloc_recorder_;
 };
 
 /*! \brief Collect scope parent links and buffer vars referenced in for headers.
@@ -144,7 +137,7 @@ public:
       for_header_vars_;
 
 private:
-  void VisitStmt_(const SBlockRealizeNode *op) final {
+  void VisitStmt_(const BlockRealizeNode *op) final {
     parent_scope_[op->block.get()] = scope_stack_.back();
     scope_stack_.push_back(op->block.get());
     if (!is_one(op->predicate)) {
@@ -194,12 +187,14 @@ class BufferAllocationLocator : public StmtExprMutator {
 public:
   explicit BufferAllocationLocator(const PrimFunc &func) {
     // Use TVM's tir LCA detection implementation
-    Map<Buffer, Optional<Stmt>> buffer_lca = tirx::DetectBufferAccessLCA(func);
-    Map<Var, Optional<Stmt>> var_lca = tirx::DetectBufferVarAccessLCA(func);
+    ffi::Map<Buffer, ffi::Optional<Stmt>> buffer_lca =
+        tir::DetectBufferAccessLCA(func);
+    ffi::Map<Var, ffi::Optional<Stmt>> var_lca =
+        tir::DetectBufferVarAccessLCA(func);
 
     // The buffer_alloc_recorder Array is used to keep the buffer allocation
     // order since the buffer_lca Map is unordered.
-    Array<Buffer> buffer_alloc_recorder =
+    ffi::Array<Buffer> buffer_alloc_recorder =
         BufferAllocateOrderCollector::Collect(func);
     std::unordered_set<const VarNode *> arg_buffer_vars;
     CollectManagedAllocations collector;
@@ -257,7 +252,7 @@ private:
   // Maintain a stack of Buffers per data var to correctly handle cases
   // where multiple Buffer objects share the same underlying data Var.
   void PushBinding(const Var &v, const Buffer &buf) {
-    Array<Buffer> arr;
+    ffi::Array<Buffer> arr;
     auto it = buffer_data_to_buffers_.find(v);
     if (it != buffer_data_to_buffers_.end()) {
       arr = (*it).second;
@@ -270,14 +265,14 @@ private:
     auto it = buffer_data_to_buffers_.find(v);
     if (it == buffer_data_to_buffers_.end())
       return;
-    Array<Buffer> arr = (*it).second;
+    ffi::Array<Buffer> arr = (*it).second;
     if (!arr.empty()) {
       // erase last element
       std::vector<Buffer> tmp;
       tmp.reserve(arr.size() - 1);
       for (size_t i = 0; i + 1 < arr.size(); ++i)
         tmp.push_back(arr[i]);
-      arr = Array<Buffer>(tmp);
+      arr = ffi::Array<Buffer>(tmp);
     }
     if (arr.empty()) {
       buffer_data_to_buffers_.erase(v);
@@ -292,12 +287,12 @@ private:
   }
 
   // Snapshot the current top binding per Var for APIs that require
-  // a single Buffer per data Var (e.g. GetSBlockReadWriteRegion).
-  Map<Var, Buffer> SnapshotVarMap() const {
-    Map<Var, Buffer> out;
+  // a single Buffer per data Var (e.g. GetBlockReadWriteRegion).
+  ffi::Map<Var, Buffer> SnapshotVarMap() const {
+    ffi::Map<Var, Buffer> out;
     for (const auto &kv : buffer_data_to_buffers_) {
       const Var &v = kv.first;
-      const Array<Buffer> &arr = kv.second;
+      const ffi::Array<Buffer> &arr = kv.second;
       if (!arr.empty()) {
         out.Set(v, arr[arr.size() - 1]);
       }
@@ -332,7 +327,7 @@ private:
       PushBinding(buf->data, buf);
     }
     auto node = Downcast<For>(StmtMutator::VisitStmt_(op));
-    Array<Buffer> new_block_alloc_bufs;
+    ffi::Array<Buffer> new_block_alloc_bufs;
     for (const Buffer &buf : it->second) {
       if (managed_allocations_.count(buf->data.get())) {
         PopBinding(buf->data);
@@ -348,10 +343,10 @@ private:
     return node;
   }
 
-  Stmt VisitStmt_(const SBlockNode *op) final {
+  Stmt VisitStmt_(const BlockNode *op) final {
     ICHECK(!op->init.defined());
-    Array<Buffer> alloc_buffers;
-    Array<Buffer> preserved_barrier_buffers;
+    ffi::Array<Buffer> alloc_buffers;
+    ffi::Array<Buffer> preserved_barrier_buffers;
     for (const Buffer &buf : op->alloc_buffers) {
       if (IsBarrierBuffer(buf)) {
         alloc_buffers.push_back(buf);
@@ -373,7 +368,7 @@ private:
       PushBinding(target_var, match_buffer->buffer);
     }
     Stmt stmt = StmtMutator::VisitStmt_(op);
-    op = stmt.as<SBlockNode>();
+    op = stmt.as<BlockNode>();
     ICHECK(op != nullptr);
 
     // No longer consider buffers created by match_buffer inside the block when
@@ -393,7 +388,7 @@ private:
       PopBinding(buf->data);
     }
 
-    ObjectPtr<SBlockNode> n = CopyOnWrite(op);
+    ObjectPtr<BlockNode> n = CopyOnWrite(op);
     n->alloc_buffers = std::move(alloc_buffers);
     // Erase buffer allocated inside the block from access region.
     n->reads = RemoveRedundantBufferRegion(n->reads);
@@ -401,29 +396,35 @@ private:
     return Stmt(n);
   }
 
-  Stmt InjectOpaqueBlock(Stmt body, const Array<Buffer> &alloc_buffers) {
+  Stmt VisitStmt_(const BufferRealizeNode *op) final {
+    ICHECK(false)
+        << "Internal Error: BufferRealizeNode is not allowed in TensorIR.";
+    throw;
+  }
+
+  Stmt InjectOpaqueBlock(Stmt body, const ffi::Array<Buffer> &alloc_buffers) {
     ICHECK(!alloc_buffers.empty());
-    SBlock opaque_block(/*iter_vars=*/{},
-                        /*reads=*/{},
-                        /*writes=*/{},
-                        /*name_hint=*/"",
-                        /*body=*/std::move(body),
-                        /*init=*/std::nullopt,
-                        /*alloc_buffers=*/alloc_buffers);
-    ObjectPtr<SBlockNode> n = CopyOnWrite(opaque_block.get());
+    Block opaque_block(/*iter_vars=*/{},
+                       /*reads=*/{},
+                       /*writes=*/{},
+                       /*name_hint=*/"",
+                       /*body=*/std::move(body),
+                       /*init=*/std::nullopt,
+                       /*alloc_buffers=*/alloc_buffers);
+    ObjectPtr<BlockNode> n = CopyOnWrite(opaque_block.get());
     // Snapshot to a Var->Buffer map using the innermost binding for each Var.
-    Map<Var, Buffer> var_map = SnapshotVarMap();
-    Array<Array<BufferRegion>> access =
-        GetSBlockReadWriteRegion(opaque_block, var_map);
+    ffi::Map<Var, Buffer> var_map = SnapshotVarMap();
+    ffi::Array<ffi::Array<BufferRegion>> access =
+        GetBlockReadWriteRegion(opaque_block, var_map);
     n->reads = access[0];
     n->writes = access[1];
-    SBlockRealize realize({}, Bool(true), SBlock(n));
+    BlockRealize realize({}, Bool(true), Block(n));
     return realize;
   }
 
-  Array<BufferRegion>
-  RemoveRedundantBufferRegion(const Array<BufferRegion> &region) const {
-    Array<BufferRegion> result;
+  ffi::Array<BufferRegion>
+  RemoveRedundantBufferRegion(const ffi::Array<BufferRegion> &region) const {
+    ffi::Array<BufferRegion> result;
     for (const BufferRegion &buffer_region : region) {
       if (HasBinding(buffer_region->buffer->data)) {
         result.push_back(buffer_region);
@@ -433,16 +434,15 @@ private:
   }
 
   /*! \brief The map from stmt to the buffers to be allocated under it. */
-  std::unordered_map<const StmtNode *, Array<Buffer>> alloc_buffers_;
+  std::unordered_map<const StmtNode *, ffi::Array<Buffer>> alloc_buffers_;
   /*! \brief Parent scope for each For/Block stmt. */
   std::unordered_map<const StmtNode *, const StmtNode *> parent_scope_;
   /*! \brief Buffer vars referenced in the header of each For stmt. */
   std::unordered_map<const ForNode *, std::unordered_set<const VarNode *>>
       for_header_vars_;
   /*! \brief Stack of buffers per data var for scoping correctness. */
-  Map<Var, Array<Buffer>> buffer_data_to_buffers_;
-  /*! \brief Buffers that are allocated within a SBlockNode, and may be moved.
-   */
+  ffi::Map<Var, ffi::Array<Buffer>> buffer_data_to_buffers_;
+  /*! \brief Buffers that are allocated within a BlockNode, and may be moved. */
   std::unordered_set<const VarNode *> managed_allocations_;
 
   static bool IsBarrierBuffer(const Buffer &buffer) {
@@ -469,7 +469,7 @@ Pass PlanAndUpdateBufferAllocationLocation() {
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
-  namespace refl = reflection;
+  namespace refl = tvm::ffi::reflection;
   refl::GlobalDef().def("tl.transform.PlanAndUpdateBufferAllocationLocation",
                         PlanAndUpdateBufferAllocationLocation);
 }

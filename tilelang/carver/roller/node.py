@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import tvm
-from tvm import tirx
-from tvm.tirx import IterVar, PrimFunc
+from tvm import tir
+from tvm.tir import IterVar, PrimFunc
 from typing import Any
-from tvm.s_tir import Schedule
-from tvm.s_tir.schedule import SBlockRV
+from tvm.tir.schedule.schedule import BlockRV
 import numpy as np
 import functools
 from ..analysis import BlockInfo, get_reduction_blocks
@@ -34,19 +33,19 @@ def pre_order_traverse(block_analyzer, blocks, func):
 
 class BlockAnalyzer:
     def __init__(self, sch) -> None:
-        self.sch: Schedule = sch
+        self.sch: tir.Schedule = sch
         self.block_infos: list[BlockInfo] = normalize_prim_func(self.sch)
 
-    def get_block_name(self, block: SBlockRV) -> str:
+    def get_block_name(self, block: BlockRV) -> str:
         return self.sch.get(block).name_hint
 
-    def get_block_info(self, block: SBlockRV) -> BlockInfo:
+    def get_block_info(self, block: BlockRV) -> BlockInfo:
         for block_info in self.block_infos:
             if self.get_block_name(block) == block_info.name:
                 return block_info
         return None
 
-    def get_spatial_axis(self, block: SBlockRV) -> list[IterVar]:
+    def get_spatial_axis(self, block: BlockRV) -> list[IterVar]:
         block_info = self.get_block_info(block)
         axis = []
         for iter in block_info.iters:
@@ -54,7 +53,7 @@ class BlockAnalyzer:
                 axis.append(iter)
         return axis
 
-    def get_reduce_axis(self, block: SBlockRV) -> list[IterVar]:
+    def get_reduce_axis(self, block: BlockRV) -> list[IterVar]:
         block_info = self.get_block_info(block)
         raxis = []
         for iter in block_info.iters:
@@ -62,25 +61,25 @@ class BlockAnalyzer:
                 raxis.append(iter)
         return raxis
 
-    def get_input_buffers(self, block: SBlockRV) -> list[tirx.Buffer]:
+    def get_input_buffers(self, block: BlockRV) -> list[tir.Buffer]:
         buffers = []
         for read in self.sch.get(block).reads:
             buffers.append(read.buffer)
         return buffers
 
-    def get_output_buffers(self, block: SBlockRV) -> list[tirx.Buffer]:
+    def get_output_buffers(self, block: BlockRV) -> list[tir.Buffer]:
         buffers = []
         for write in self.sch.get(block).writes:
             buffers.append(write.buffer)
         return buffers
 
-    def get_buffers(self, block: SBlockRV) -> list[tirx.Buffer]:
+    def get_buffers(self, block: BlockRV) -> list[tir.Buffer]:
         return self.get_input_buffers(block) + self.get_output_buffers(block)
 
-    def get_producer_blocks(self, block: SBlockRV) -> list[SBlockRV]:
+    def get_producer_blocks(self, block: BlockRV) -> list[BlockRV]:
         return self.sch.get_producers(block)
 
-    def get_consumer_blocks(self, block: SBlockRV) -> list[SBlockRV]:
+    def get_consumer_blocks(self, block: BlockRV) -> list[BlockRV]:
         return self.sch.get_consumers(block)
 
 
@@ -191,12 +190,12 @@ class PrimFuncNode(Node):
     def __init__(self, prim_func: PrimFunc, tags: dict | None = None, name: str = "PrimFuncNode") -> None:
         super().__init__(tags, name=name)
         self.prim_func = self._specialize_func(prim_func)
-        self.sch: Schedule = Schedule(self.prim_func)
+        self.sch: tir.Schedule = tir.Schedule(self.prim_func)
         self.block_analyzer: BlockAnalyzer = BlockAnalyzer(self.sch)
-        self.schedule_stages: list[SBlockRV] = []
-        self.blocks: list[SBlockRV] = []
-        self.output_blocks: list[SBlockRV] = None
-        self.reduction_block: SBlockRV = None
+        self.schedule_stages: list[BlockRV] = []
+        self.blocks: list[BlockRV] = []
+        self.output_blocks: list[BlockRV] = None
+        self.reduction_block: BlockRV = None
         self.raxis = []
         self.input_buffers = []
         self.output_buffers = []
@@ -290,9 +289,9 @@ class PrimFuncNode(Node):
         return opt_shapes[name]
 
     def extent_wrapper(self, value) -> int:
-        if isinstance(value, tvm.tirx.Var):
+        if isinstance(value, tvm.tir.Var):
             return self.get_opt_shape(value.name)
-        elif isinstance(value, tvm.tirx.IntImm):
+        elif isinstance(value, tvm.tir.IntImm):
             return int(value)
         else:
             return value
@@ -304,10 +303,10 @@ class PrimFuncNode(Node):
             block_info = self.block_analyzer.get_block_info(self.reduction_block)
             for iter in block_info.iters:
                 if iter.kind == "S":
-                    if isinstance(iter.dom.extent, tvm.tirx.IntImm):
+                    if isinstance(iter.dom.extent, tvm.tir.IntImm):
                         dim_size.append(int(iter.dom.extent))
                     else:
-                        assert isinstance(iter.dom.extent, tvm.tirx.Var)
+                        assert isinstance(iter.dom.extent, tvm.tir.Var)
                         dim_size.append(self.get_opt_shape(iter.dom.extent.name))
         else:
             # assume outer stage has the same shape
@@ -326,7 +325,7 @@ class PrimFuncNode(Node):
             assert self._dtypes[id] == dtype, (self._dtypes, dtype)
         self._dtypes[id] = dtype
 
-    def get_buffer_dtype(self, buffer: tirx.Buffer) -> tvm.DataType:
+    def get_buffer_dtype(self, buffer: tir.Buffer) -> tvm.DataType:
         return tvm.DataType(buffer.dtype)
 
     def propagate(self, tile, rstep: dict | None = None, targets=None):
@@ -494,7 +493,7 @@ class PrimFuncNode(Node):
                 result += buffer_len
         return result, cached_tensor
 
-    def get_input_buffers(self) -> list[tirx.Buffer]:
+    def get_input_buffers(self) -> list[tir.Buffer]:
         return self.block_analyzer.input_buffers
 
 

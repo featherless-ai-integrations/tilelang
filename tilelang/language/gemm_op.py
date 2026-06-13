@@ -6,7 +6,7 @@ from tilelang._typing import BufferLikeType, BarrierType
 from tilelang.tileop.base import GemmWarpPolicy
 import tilelang.language as T
 from tilelang.layout import Layout
-from tvm import tirx
+from tvm import tir
 from tilelang.utils.language import (
     to_buffer_region,
     retrieve_shape,
@@ -32,22 +32,22 @@ def _gemm_impl(
     wg_wait: int = 0,
     mbar: BarrierType | None = None,
     annotations: dict | None = None,
-) -> tirx.PrimExpr:
+) -> tir.PrimExpr:
     """Shared GEMM implementation.
 
     Returns a call_intrin handle for the given op key.
     """
 
-    def legalize_arguments(arg: BufferLikeType | tirx.Var) -> BufferLikeType:
+    def legalize_arguments(arg: BufferLikeType | tir.Var) -> BufferLikeType:
         """Convert let-bound variables to their corresponding buffers.
 
         Args:
-            arg (Union[tirx.Buffer, tirx.Var]): Input argument to legalize
+            arg (Union[tir.Buffer, tir.Var]): Input argument to legalize
 
         Returns:
-            Union[tirx.Buffer, tirx.Var]: The legalized argument
+            Union[tir.Buffer, tir.Var]: The legalized argument
         """
-        if isinstance(arg, tirx.Var) and T.has_let_value(arg):
+        if isinstance(arg, tir.Var) and T.has_let_value(arg):
             return T.get_let_value(arg).buffer
         return arg
 
@@ -107,8 +107,8 @@ def _gemm_impl(
     offset_b = B_offset[-1]
 
     if mbar is not None:
-        assert isinstance(mbar, (tirx.Buffer, tirx.BufferLoad)), (
-            f"mbar for tcgen5mma must be a tirx.Buffer or tirx.BufferLoad, but got {type(mbar)}"
+        assert isinstance(mbar, (tir.Buffer, tir.BufferLoad)), (
+            f"mbar for tcgen5mma must be a tir.Buffer or tir.BufferLoad, but got {type(mbar)}"
         )
         mbar = to_buffer_region(mbar, access_type="rw")
     C_coords = [r.min for r in C_region.region]
@@ -119,10 +119,10 @@ def _gemm_impl(
     # When mbar is None, pass a placeholder constant (0).
     # The C++ side checks if arg 16 is a BufferLoadNode before using it,
     # so a non-BufferLoad value will be correctly ignored.
-    mbar_arg = mbar if mbar is not None else tirx.const(0, dtype="int32")
-    return tirx.call_intrin(
+    mbar_arg = mbar if mbar is not None else tir.const(0, dtype="int32")
+    return tir.call_intrin(
         "handle",
-        tirx.op.Op.get(op_key),
+        tir.op.Op.get(op_key),
         A_arg,
         B_arg,
         C_arg,
@@ -156,7 +156,7 @@ def gemm(
     clear_accum: bool = False,
     k_pack: int = 1,
     mbar: BarrierType | None = None,
-) -> tirx.PrimExpr:
+) -> tir.PrimExpr:
     """TileLang GEMM operator.
 
     This is the default synchronous GEMM interface. On Hopper, if the compiler
@@ -181,7 +181,7 @@ def gemm(
             Required when this GEMM lowers to TCGEN5MMA. Defaults to None.
 
     Returns:
-        tirx.Call: A handle to the GEMM operation.
+        tir.Call: A handle to the GEMM operation.
     """
     return _gemm_impl(
         "tl.tileop.gemm",
@@ -206,7 +206,7 @@ def wgmma_gemm(
     transpose_B: bool = False,
     policy: GemmWarpPolicy = GemmWarpPolicy.Square,
     clear_accum: bool = False,
-) -> tirx.PrimExpr:
+) -> tir.PrimExpr:
     """Explicit Hopper WGMMA GEMM without an implicit wait.
 
     This is the explicit asynchronous Hopper WGMMA counterpart to the default
@@ -244,7 +244,7 @@ def tcgen05_gemm(
     *,
     mbar: BarrierType,
     use_2cta: bool = False,
-) -> tirx.PrimExpr:
+) -> tir.PrimExpr:
     """Explicit Blackwell TCGEN05 GEMM without an implicit wait.
 
     This is the explicit asynchronous Blackwell TCGEN5MMA counterpart to the
@@ -289,12 +289,11 @@ def tcgen05_gemm_blockscaled(
     clear_accum=False,
     wg_wait: int = 0,
     mbar: BarrierType | None = None,
+    sf_a_id: int = 0,
+    sf_b_id: int = 0,
     *,
-    k_start: int | tirx.PrimExpr,
-    sf_a_granularity_k: int,
-    sf_b_granularity_k: int,
     use_2cta: bool = False,
-) -> tirx.PrimExpr:
+) -> tir.PrimExpr:
     """Explicit Blackwell TCGEN05 block-scaled GEMM without an implicit wait.
 
     This is the explicit asynchronous Blackwell TCGEN5MMA block-scaled
@@ -306,20 +305,14 @@ def tcgen05_gemm_blockscaled(
     path only; there is no fallback or emulation. That mode requires
     ``cluster_dims`` to be ``(2,1,1)`` or ``(1,2,1)``.
 
-    A and B are FP8/FP6/FP4 mxf8f6f4 operands in shared memory, C is the
-    accumulator in tensor memory, and SFA/SFB are E8M0 scale factors already
-    resident in tensor memory. As with `T.tcgen05_gemm(...)`, this API is
-    explicit-async: it issues the MMA and leaves synchronization to the user
-    schedule.
-
-    ``k_start`` is the logical K-axis start offset for this MMA tile.
-    ``sf_a_granularity_k`` and ``sf_b_granularity_k`` describe how many K
-    elements one packed scale factor covers. The compiler derives the PTX
-    scale-factor A/B IDs for each internal K32 MMA atom from these values.
+    A and B are FP8 (E4M3/E5M2) in shared memory, C is the accumulator in
+    tensor memory, and SFA/SFB are E8M0 scale factors already resident in
+    tensor memory. As with `T.tcgen05_gemm(...)`, this API is explicit-async:
+    it issues the MMA and leaves synchronization to the user schedule.
 
     Args:
-        A: FP8/FP6/FP4 input buffer A in shared memory.
-        B: FP8/FP6/FP4 input buffer B in shared memory.
+        A: FP8 input buffer A in shared memory.
+        B: FP8 input buffer B in shared memory.
         C: Accumulator in tensor memory.
         SFA_tmem: Scale factors for A in tensor memory.
         SFB_tmem: Scale factors for B in tensor memory.
@@ -328,21 +321,17 @@ def tcgen05_gemm_blockscaled(
         clear_accum: Whether to zero the accumulator.
         wg_wait: Warp group wait identifier.
         mbar: Mbarrier for MMA completion signaling.
-        k_start: Logical K-axis start offset for this MMA tile.
-        sf_a_granularity_k: K elements covered by one A scale factor.
-        sf_b_granularity_k: K elements covered by one B scale factor.
+        sf_a_id: Scale factor ID for A (0-3).
+        sf_b_id: Scale factor ID for B (0-3).
         use_2cta: Whether to request true ``cta_group::2`` lowering.
     """
 
     ann = {"use_2cta": int(use_2cta)} if use_2cta else None
-    ann = {} if ann is None else dict(ann)
-    ann["sf_a_granularity_k"] = int(sf_a_granularity_k)
-    ann["sf_b_granularity_k"] = int(sf_b_granularity_k)
 
     # Re-read normalized regions below after let legalization.
 
     def legalize(arg):
-        if isinstance(arg, tirx.Var) and T.has_let_value(arg):
+        if isinstance(arg, tir.Var) and T.has_let_value(arg):
             return T.get_let_value(arg).buffer
         return arg
 
@@ -391,8 +380,8 @@ def tcgen05_gemm_blockscaled(
     offset_b = B_offset[-1]
 
     if mbar is not None:
-        assert isinstance(mbar, (tirx.Buffer, tirx.BufferLoad)), (
-            f"mbar for tcgen5mma must be a tirx.Buffer or tirx.BufferLoad, but got {type(mbar)}"
+        assert isinstance(mbar, (tir.Buffer, tir.BufferLoad)), (
+            f"mbar for tcgen5mma must be a tir.Buffer or tir.BufferLoad, but got {type(mbar)}"
         )
         mbar = to_buffer_region(mbar, access_type="rw")
 
@@ -407,15 +396,18 @@ def tcgen05_gemm_blockscaled(
 
     assert mbar is not None, "mbar is required for tcgen05_gemm_blockscaled"
 
-    if not isinstance(k_start, tirx.PrimExpr):
-        k_start = tirx.const(k_start, dtype="int32")
+    # Ensure sf_a_id and sf_b_id are PrimExpr
+    if not isinstance(sf_a_id, tir.PrimExpr):
+        sf_a_id = tir.const(sf_a_id, dtype="int32")
+    if not isinstance(sf_b_id, tir.PrimExpr):
+        sf_b_id = tir.const(sf_b_id, dtype="int32")
 
     # Block-scaled always uses Square policy (1x1 warp partition)
     policy = GemmWarpPolicy.Square
 
-    return tirx.call_intrin(
+    return tir.call_intrin(
         "handle",
-        tirx.op.Op.get("tl.tileop.gemm"),
+        tir.op.Op.get("tl.tileop.gemm"),
         A_arg,
         B_arg,
         C_arg,
@@ -437,7 +429,8 @@ def tcgen05_gemm_blockscaled(
         C_coords[1],
         SFA_arg,  # arg 19
         SFB_arg,  # arg 20
-        k_start,  # arg 21
+        sf_a_id,  # arg 21
+        sf_b_id,  # arg 22
         annotations=ann,
     )
 
@@ -486,5 +479,5 @@ def make_blockscaled_gemm_layout(
         chunk=K,
     )
 
-    c_buf = C_region.buffer if isinstance(C_region, tirx.BufferRegion) else C
+    c_buf = C_region.buffer if isinstance(C_region, tir.BufferRegion) else C
     return emitter.make_mma_store_layout(c_buf)

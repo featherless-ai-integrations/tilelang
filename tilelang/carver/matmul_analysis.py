@@ -4,22 +4,19 @@
 from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
-from tvm import tirx
+from tvm import tir
 from tvm.ir import Range
-from tvm.tirx import IterVar, PrimExpr, Var, BufferRegion, IndexMap
-from tvm.tirx.analysis import undefined_vars
-from tvm.s_tir import Schedule
-from tvm.s_tir.schedule import SBlockRV
+from tvm.tir import IterVar, PrimExpr, Var, BufferRegion, IndexMap
+from tvm.tir.analysis import undefined_vars
+from tvm.tir.schedule.schedule import BlockRV
 from .analysis import (
     collect_block_iter_vars_used_in_access_region,
     get_root_block,
     get_reduction_blocks,
 )
 from tvm.target.target import Target
-from tvm.tirx.stmt_functor import pre_order_visit
+from tvm.tir.stmt_functor import pre_order_visit
 from .arch import get_arch, is_tensorcore_supported_precision
-from .arch.rdna import _get_rdna_tuning_config
-from tilelang.rocm.target import target_get_mcpu, target_is_rdna
 import logging
 
 logger = logging.getLogger(__name__)
@@ -39,10 +36,10 @@ def collect_vars_from_expr(prim_expr):
 
 
 def _is_one(x: PrimExpr) -> bool:
-    return isinstance(x, tirx.IntImm) and x.value == 1
+    return isinstance(x, tir.IntImm) and x.value == 1
 
 
-def _collect_producers(sch: Schedule, block: SBlockRV):
+def _collect_producers(sch: tir.Schedule, block: tir.schedule.BlockRV):
     result = []
     for producer in sch.get_producers(block):
         result.append(producer)
@@ -50,7 +47,7 @@ def _collect_producers(sch: Schedule, block: SBlockRV):
     return result
 
 
-def _collect_consumers(sch: Schedule, block: SBlockRV):
+def _collect_consumers(sch: tir.Schedule, block: tir.schedule.BlockRV):
     result = []
     for consumer in sch.get_consumers(block):
         result.append(consumer)
@@ -59,9 +56,9 @@ def _collect_consumers(sch: Schedule, block: SBlockRV):
 
 
 def auto_inline_producers(
-    sch: Schedule,
-    block: SBlockRV,
-    skip_blocks: list[SBlockRV] | None = None,
+    sch: tir.Schedule,
+    block: tir.schedule.BlockRV,
+    skip_blocks: list[tir.schedule.BlockRV] | None = None,
 ):
     skip_blocks = skip_blocks or []
     while True:
@@ -80,8 +77,8 @@ def auto_inline_producers(
 
 
 def auto_inline_consumers(
-    sch: Schedule,
-    block: SBlockRV,
+    sch: tir.Schedule,
+    block: tir.schedule.BlockRV,
 ):
     while True:
         inlined_cnt = 0
@@ -103,8 +100,8 @@ def auto_inline_consumers(
 
 
 def auto_inline_consumer_chain(
-    sch: Schedule,
-    block: SBlockRV,
+    sch: tir.Schedule,
+    block: tir.schedule.BlockRV,
 ):
     auto_inline_consumers(sch, block)
     remaining_consumers = sch.get_consumers(block)
@@ -122,7 +119,7 @@ def auto_inline_consumer_chain(
 
 
 # used to match the similar region with dequantize op.
-def find_first_similar_region(regions: list[BufferRegion], buffer: tirx.Buffer):
+def find_first_similar_region(regions: list[BufferRegion], buffer: tir.Buffer):
     for region in regions:
         if len(region.buffer.shape) == len(buffer.shape):
             return region
@@ -130,7 +127,7 @@ def find_first_similar_region(regions: list[BufferRegion], buffer: tirx.Buffer):
 
 
 # used to match the similar buffer with dequantize op.
-def find_first_similar_buffer(regions: list[BufferRegion], buffer: tirx.Buffer):
+def find_first_similar_buffer(regions: list[BufferRegion], buffer: tir.Buffer):
     for region in regions:
         if len(region.buffer.shape) == len(buffer.shape):
             return region.buffer
@@ -138,7 +135,7 @@ def find_first_similar_buffer(regions: list[BufferRegion], buffer: tirx.Buffer):
 
 
 # find the block that required to be reindex and scope.
-def find_last_producer_from_buffer(sch, main_block, buffer: tirx.Buffer) -> SBlockRV | None:
+def find_last_producer_from_buffer(sch, main_block, buffer: tir.Buffer) -> BlockRV | None:
     # block that most near to the arguments
     block = main_block
     buffer = buffer
@@ -161,12 +158,12 @@ def find_last_producer_from_buffer(sch, main_block, buffer: tirx.Buffer) -> SBlo
     return block
 
 
-def find_arg_idx_from_buffer_chain(sch: Schedule, main_block: SBlockRV, buffer: tirx.Buffer) -> int:
+def find_arg_idx_from_buffer_chain(sch: tir.Schedule, main_block: tir.schedule.BlockRV, buffer: tir.Buffer) -> int:
     """traverse to find the arg index from the buffer"""
     producers = sch.get_producers(main_block)
 
     # a head buffer has no producer blocks
-    def find_args_index(sch: Schedule, buffer: tirx.Buffer):
+    def find_args_index(sch: tir.Schedule, buffer: tir.Buffer):
         for i, param in enumerate(sch.mod["main"].params):
             if sch.mod["main"].buffer_map[param] == buffer:
                 return i
@@ -214,11 +211,11 @@ class IterTrait:
 def make_iter_fusion_index_map(
     traits: list[IterTrait],
     kind_order: list[IterKind],
-) -> tirx.IndexMap:
+) -> tir.IndexMap:
     fused_iters: dict[IterKind, PrimExpr] = {}
-    input_iters: list[tirx.Var] = []
+    input_iters: list[tir.Var] = []
     for i, trait in enumerate(traits):
-        v_i = tirx.Var(f"i{i}", trait.extent.dtype)
+        v_i = tir.Var(f"i{i}", trait.extent.dtype)
         input_iters.append(v_i)
         if trait.kind == IterKind.kIter_T:
             continue
@@ -229,17 +226,17 @@ def make_iter_fusion_index_map(
         else:
             fused_iters[trait.kind] = v_i
 
-    final_indices: list[tirx.PrimExpr] = [fused_iters.get(kind, tirx.IntImm(traits[0].extent.dtype, 0)) for kind in kind_order]
+    final_indices: list[tir.PrimExpr] = [fused_iters.get(kind, tir.IntImm(traits[0].extent.dtype, 0)) for kind in kind_order]
 
-    return tirx.IndexMap(input_iters, final_indices, None)
+    return tir.IndexMap(input_iters, final_indices, None)
 
 
-def detect_iter_traits(block: tirx.SBlock) -> tuple[list[IterTrait]] | None:
+def detect_iter_traits(block: tir.Block) -> tuple[list[IterTrait]] | None:
     """Detect iter traits based on the pattern C[S, I, J] += A[S, I, K] * B[S, J, K]
 
     Parameters
     ----------
-    block : tirx.SBlock
+    block : tir.Block
         The block to be analyzed
 
     Returns
@@ -273,7 +270,7 @@ def detect_iter_traits(block: tirx.SBlock) -> tuple[list[IterTrait]] | None:
         var = iter_var.var
         kind: IterKind
         if _is_one(iter_var.dom.extent):
-            if iter_var.iter_type == tirx.IterVar.CommReduce:
+            if iter_var.iter_type == tir.IterVar.CommReduce:
                 # for simplified case (e.g. 1x1 conv kernel)
                 kind = IterKind.kIter_K
             else:
@@ -287,7 +284,7 @@ def detect_iter_traits(block: tirx.SBlock) -> tuple[list[IterTrait]] | None:
                 kind = IterKind.kIter_J
             else:
                 return None
-        elif iter_var.iter_type == tirx.IterVar.CommReduce:
+        elif iter_var.iter_type == tir.IterVar.CommReduce:
             if var in A_axes and var in B_axes and var not in C_axes:
                 kind = IterKind.kIter_K
             else:
@@ -308,12 +305,12 @@ def detect_iter_traits(block: tirx.SBlock) -> tuple[list[IterTrait]] | None:
     return A_traits, B_traits, C_traits, block_traits
 
 
-def get_index_map(block: tirx.SBlock, layout: list[str] | None = None) -> tuple[tirx.IndexMap, ...] | None:
+def get_index_map(block: tir.Block, layout: list[str] | None = None) -> tuple[tir.IndexMap, ...] | None:
     """Get index maps for the block
 
     Parameters
     ----------
-    block : tirx.SBlock
+    block : tir.Block
         The block to be analyzed
 
     layout : List[str]
@@ -324,7 +321,7 @@ def get_index_map(block: tirx.SBlock, layout: list[str] | None = None) -> tuple[
 
     Returns
     -------
-    index_maps : Optional[Tuple[tirx.IndexMap]]
+    index_maps : Optional[Tuple[tir.IndexMap]]
         The index maps for the block, or None if the block is not a gemm-liked kernel
     """
     if layout is None:
@@ -406,7 +403,7 @@ def get_index_map(block: tirx.SBlock, layout: list[str] | None = None) -> tuple[
     )
 
 
-def get_in_out_dtypes(block: tirx.SBlock) -> tuple[str]:
+def get_in_out_dtypes(block: tir.Block) -> tuple[str]:
     """
     Detect In/Out data types for the given block based on the analysis if read/write buffers.
     """
@@ -416,10 +413,10 @@ def get_in_out_dtypes(block: tirx.SBlock) -> tuple[str]:
     return (in_dtype, out_dtype)
 
 
-def get_dequantize_block(sch, blocks) -> SBlockRV | None:
+def get_dequantize_block(sch, blocks) -> BlockRV | None:
     # check at least two input and one output
     # at lease one input has uint dtype, and the output dtype is float
-    def is_dequantize(block: SBlockRV) -> bool:
+    def is_dequantize(block: BlockRV) -> bool:
         block_stmt = sch.get(block)
         if len(block_stmt.reads) < 2:
             return False
@@ -432,13 +429,13 @@ def get_dequantize_block(sch, blocks) -> SBlockRV | None:
     return dequantize_blocks[0] if len(dequantize_blocks) == 1 else None
 
 
-def is_identity_or_transpose_block(block_stmt: tirx.SBlock) -> bool:
+def is_identity_or_transpose_block(block_stmt: tir.Block) -> bool:
     iter_types = {iter_var.iter_type for iter_var in block_stmt.iter_vars}
     if iter_types != {IterVar.DataPar}:
         return False, False
-    if not isinstance(block_stmt.body, tirx.BufferStore):
+    if not isinstance(block_stmt.body, tir.BufferStore):
         return False, False
-    if not isinstance(block_stmt.body.value, tirx.BufferLoad):
+    if not isinstance(block_stmt.body.value, tir.BufferLoad):
         return False, False
 
     def get_access_vars(region: list[Range]) -> list[Var]:
@@ -461,15 +458,15 @@ def is_identity_or_transpose_block(block_stmt: tirx.SBlock) -> bool:
     return is_identity, is_transpose
 
 
-def is_identity_block(block_stmt: tirx.SBlock) -> bool:
+def is_identity_block(block_stmt: tir.Block) -> bool:
     return is_identity_or_transpose_block(block_stmt)[0]
 
 
-def is_transpose_block(block_stmt: tirx.SBlock) -> bool:
+def is_transpose_block(block_stmt: tir.Block) -> bool:
     return is_identity_or_transpose_block(block_stmt)[1]
 
 
-def inline_transpose_block(sch: Schedule, blocks: list[SBlockRV]):
+def inline_transpose_block(sch: tir.Schedule, blocks: list[tir.schedule.BlockRV]):
     result_blocks = []
     for block in blocks:
         if not is_transpose_block(sch.get(block)):
@@ -485,7 +482,7 @@ def inline_transpose_block(sch: Schedule, blocks: list[SBlockRV]):
     return result_blocks
 
 
-def normalize_to_matmul(sch: Schedule, main_block: SBlockRV, layout: list[str] | None = None) -> Schedule | None:
+def normalize_to_matmul(sch: tir.Schedule, main_block: BlockRV, layout: list[str] | None = None) -> tir.Schedule | None:
     if layout is None:
         layout = ["n", "t", "n"]
     block_stmt = sch.get(main_block)
@@ -511,26 +508,26 @@ def normalize_to_matmul(sch: Schedule, main_block: SBlockRV, layout: list[str] |
 
 
 def get_tensorized_func_and_tags(
-    func: tirx.PrimFunc,
+    func: tir.PrimFunc,
     target: Target,
     layout: list[str] | None = None,
     skip_normalize: bool = False,
     allow_gemv: bool = False,
-) -> tuple[tirx.PrimFunc, dict[str, list[int] | int]]:
+) -> tuple[tir.PrimFunc, dict[str, list[int] | int]]:
     """
     transform function to matmul if necessary (e.g. transform conv2d with im2col)
     """
     if layout is None:
         layout = ["a", "a", "a"]
     # step1. detect whether the function can utilize tensorcore
-    sch = Schedule(func)
+    sch = tir.Schedule(func)
     root_block = get_root_block(sch)
     blocks = sch.get_child_blocks(root_block)
     reduction_blocks = get_reduction_blocks(sch, blocks)
     if not reduction_blocks or len(reduction_blocks) != 1:
         return func, None
 
-    def _can_be_tensorized(sch: Schedule, block: SBlockRV) -> bool:
+    def _can_be_tensorized(sch: tir.Schedule, block: BlockRV) -> bool:
         block_stmt = sch.get(block)
         conditions = []
         conditions.append(len(block_stmt.reads) == 2)
@@ -543,20 +540,13 @@ def get_tensorized_func_and_tags(
         sm_version = arch.replace("sm_", "")
         return int(sm_version) if sm_version.isdigit() else -1
 
-    def is_cuda_tensorcore_target(target: Target) -> bool:
-        return target.kind.name == "cuda" and check_sm_version(target.attrs.get("arch", "")) >= 70
-
-    def is_rdna_wmma_target(target: Target) -> bool:
-        return target.kind.name == "hip" and target_is_rdna(target)
-
-    def analysis_tensorcore_tags(sch: Schedule, block: SBlockRV, target: Target) -> bool | dict:
+    def analysis_tensorcore_tags(sch: tir.Schedule, block: BlockRV, target: Target) -> bool | dict:
         tags: dict[str, list[int] | int] = {}
         block_stmt = sch.get(block)
 
-        # Tensorized schedules are supported by NVIDIA Tensor Cores and by RDNA
-        # WMMA on HIP/gfx11+ targets.  Other targets fall back to the default
-        # Roller policy.
-        if not is_cuda_tensorcore_target(target) and not is_rdna_wmma_target(target):
+        # Nvidia Only Support Tensor Core for
+        # devices greater than 70.
+        if check_sm_version(target.arch) < 70:
             return False
         # analysis tensorcore axis
         # todo(lei): maybe we can remove this in the future
@@ -567,16 +557,14 @@ def get_tensorized_func_and_tags(
         # analysis pipeline stage
         # todo(lei): maybe we can integrate this into policy in the future
         tags["pipeline_stage"] = 1
-        if target.kind.name == "cuda" and check_sm_version(target.attrs.get("arch", "")) in {80, 90}:
+        if target.kind.name == "cuda" and check_sm_version(target.arch) in {80, 90}:
             # enable pipeline stage only for sm_80 devices
             tags["pipeline_stage"] = 2
-        elif is_rdna_wmma_target(target):
-            tags["pipeline_stage"] = _get_rdna_tuning_config(target_get_mcpu(target)).pipeline_stage
 
         # analysis async copy
         # todo(lei): maybe we can integrate this into policy in the future
         tags["use_async_copy"] = False
-        if target.kind.name == "cuda" and tags["pipeline_stage"] == 2 and check_sm_version(target.attrs.get("arch", "")) in {80, 90}:
+        if tags["pipeline_stage"] == 2 and check_sm_version(target.arch) in {80, 90}:
             # async copy only works in software pipeline.
             tags["use_async_copy"] = True
 
@@ -605,7 +593,7 @@ def get_tensorized_func_and_tags(
         intrin_info["in_dtype"] = in_dtype
         intrin_info["out_dtype"] = out_dtype
 
-        if target.kind.name == "cuda" and 70 <= check_sm_version(target.attrs.get("arch", "")) < 80 and out_dtype == "int32":
+        if 70 <= check_sm_version(target.arch) < 80 and out_dtype == "int32":
             # INT32 Accum TensorCore only supports SM Version > 32.
             return False
 
@@ -625,10 +613,10 @@ def get_tensorized_func_and_tags(
             for arg in func.params:
                 inp_shape = func.buffer_map[arg].shape
                 M = inp_shape[0]
-                if isinstance(M, tirx.IntImm) and M <= 128:
+                if isinstance(M, tir.IntImm) and M <= 128:
                     require_block_reduce = True
                 break
-        if target.kind.name == "cuda" and require_block_reduce and check_sm_version(target.attrs.get("arch", "")) == 80:
+        if require_block_reduce and check_sm_version(target.arch) == 80:
             tags["block_reduction_depth"] = 2
         return tags
 
@@ -637,14 +625,10 @@ def get_tensorized_func_and_tags(
         return func, None
 
     block_stmt = sch.get(main_block)
-    if is_cuda_tensorcore_target(target) or is_rdna_wmma_target(target):
+    if target.kind.name == "cuda" and check_sm_version(target.arch) >= 70:
         in_dtype, out_dtype = get_in_out_dtypes(block_stmt)
-        if is_cuda_tensorcore_target(target):
-            if not is_tensorcore_supported_precision(in_dtype, out_dtype, arch=get_arch(target)):
-                logger.debug(f"The input and output dtype ({in_dtype}, {out_dtype})is not supported by tensorcore")
-                return func, None
-        elif is_rdna_wmma_target(target) and (str(in_dtype), str(out_dtype)) not in {("float16", "float32")}:
-            logger.debug(f"The input and output dtype ({in_dtype}, {out_dtype})is not supported by RDNA WMMA")
+        if not is_tensorcore_supported_precision(in_dtype, out_dtype, arch=get_arch(target)):
+            logger.debug(f"The input and output dtype ({in_dtype}, {out_dtype})is not supported by tensorcore")
             return func, None
 
         # reindex and transform functions
@@ -673,7 +657,7 @@ def get_tensorized_func_and_tags(
             else:
                 raise ValueError(f"Unknown IterVar type {iter_type}")
 
-            if isinstance(extent, tirx.expr.IntImm) and extent.value < minimal_tensorize_threshold:
+            if isinstance(extent, tir.expr.IntImm) and extent.value < minimal_tensorize_threshold:
                 return func, None
         tags = analysis_tensorcore_tags(sch, main_block, target)
         return sch.mod["main"], tags
@@ -795,10 +779,10 @@ def get_ladder_stage3_map(dtype="float16", index_dtype="int32"):
 
 
 def layout_propagate_chain(
-    sch: Schedule,
-    start_block: SBlockRV,
-    start_buffer: tirx.Buffer,
-    end_block: SBlockRV,
+    sch: tir.Schedule,
+    start_block: BlockRV,
+    start_buffer: tir.Buffer,
+    end_block: BlockRV,
     index_map: IndexMap,
 ):
     # some layout transformation may only apply to the last n dimensions

@@ -305,15 +305,9 @@ def _find_import_libs() -> tuple[list[str], list[str]]:
     for lib_dir in TL_LIBS:
         if not os.path.isdir(lib_dir):
             continue
-        # JIT-generated host libraries call TVM runtime C API symbols such as
-        # TVMBackendGetFuncFromEnv. Split Windows builds export those from
-        # tvm_runtime.dll, while older unified builds exported them from tvm.dll.
-        runtime_lib = os.path.join(lib_dir, "tvm_runtime.lib")
-        if os.path.exists(runtime_lib):
-            add_import_lib(runtime_lib)
-        else:
-            add_import_lib(os.path.join(lib_dir, "tvm.lib"))
-        add_import_lib(os.path.join(lib_dir, "tvm_ffi.lib"))
+        for lib_name in ("tvm.lib", "tvm_ffi.lib"):
+            lib_path = os.path.join(lib_dir, lib_name)
+            add_import_lib(lib_path)
 
     try:
         from tvm_ffi import libinfo as tvm_ffi_libinfo

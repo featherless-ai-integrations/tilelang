@@ -4,12 +4,12 @@
 from __future__ import annotations
 
 import tvm
-from tvm import tirx
+from tvm import tir
 from tilelang import _ffi_api
 from tilelang._typing import BufferLikeType, BufferLikeTypeTuple
 
 
-def _get_buffer_info(buffer_or_load_or_region: BufferLikeType) -> tuple[tirx.Buffer, list[int], str]:
+def _get_buffer_info(buffer_or_load_or_region: BufferLikeType) -> tuple[tir.Buffer, list[int], str]:
     """
     Extract buffer, shape, and dtype from BufferLikeType.
 
@@ -19,7 +19,7 @@ def _get_buffer_info(buffer_or_load_or_region: BufferLikeType) -> tuple[tirx.Buf
     Returns:
         tuple: (buffer, shape, dtype)
     """
-    if isinstance(buffer_or_load_or_region, tirx.Buffer):
+    if isinstance(buffer_or_load_or_region, tir.Buffer):
         return buffer_or_load_or_region, buffer_or_load_or_region.shape, buffer_or_load_or_region.dtype
     elif isinstance(buffer_or_load_or_region, BufferLikeTypeTuple):
         buf = buffer_or_load_or_region.buffer

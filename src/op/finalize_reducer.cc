@@ -5,13 +5,11 @@
  */
 
 #include "finalize_reducer.h"
-#include "support/check.h"
-#include <tvm/ir/cast.h>
 
 #include <tvm/arith/iter_affine_map.h>
-#include <tvm/tirx/builtin.h>
-#include <tvm/tirx/op.h>
-#include <tvm/tirx/op_attr_types.h>
+#include <tvm/tir/builtin.h>
+#include <tvm/tir/op.h>
+#include <tvm/tir/op_attr_types.h>
 
 #include "utils.h"
 
@@ -20,7 +18,7 @@
 namespace tvm {
 namespace tl {
 
-using namespace tirx;
+using namespace tir;
 
 namespace {
 
@@ -37,7 +35,7 @@ const FinalizeReducerImpl &ResolveFinalizeReducerImpl(Target target) {
       ICHECK(matched_impl == nullptr)
           << "tl.finalize_reducer found multiple target-specific "
              "implementations for "
-          << target->str() << ": " << matched_impl->name << " and "
+          << target->ToDebugString() << ": " << matched_impl->name << " and "
           << impl.name;
       matched_impl = &impl;
     }
@@ -45,7 +43,7 @@ const FinalizeReducerImpl &ResolveFinalizeReducerImpl(Target target) {
   ICHECK(matched_impl != nullptr)
       << "tl.finalize_reducer requires a target-specific implementation, but "
          "no finalize_reducer implementation is registered for "
-      << target->str();
+      << target->ToDebugString();
   return *matched_impl;
 }
 
@@ -70,9 +68,8 @@ void RegisterFinalizeReducerImpl(FinalizeReducerImpl impl) {
  *             `args[0]` is an access pointer identifying the reducer variable
  * and `args[1]` is an integer encoding a `ReducerOpType` (e.g., Sum/Max/Min).
  */
-FinalizeReducerOp::FinalizeReducerOp(
-    ffi::Array<PrimExpr> args,
-    ffi::Map<ffi::String, ffi::ObjectRef> annotations) {
+FinalizeReducerOp::FinalizeReducerOp(Array<PrimExpr> args,
+                                     Map<String, ObjectRef> annotations) {
   auto node = tvm::ffi::make_object<FinalizeReducerOpNode>();
   auto reducer_access = NormalizeToAccessRegion(args[0], kAccessReadWrite);
   reducer_access.region =
@@ -84,7 +81,7 @@ FinalizeReducerOp::FinalizeReducerOp(
   // Read explicit batch size from annotations (0 means auto-detect).
   if (annotations.count("batch")) {
     node->batch = (int)*as_const_int(Downcast<PrimExpr>(annotations["batch"]));
-    ICHECK_GE(node->batch, 1)
+    CHECK_GE(node->batch, 1)
         << "finalize_reducer: batch must be >= 1, got " << node->batch;
   }
   data_ = std::move(node);

@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 from typing import Any
-from tvm import tirx
-from tvm.tirx import IntImm
-import tvm.tirx.script.builder as tb_tir
+from tvm import tir
+from tvm.tir import IntImm
+import tvm.script.ir_builder.tir as tb_tir
 from .eager.builder import SerialForWithStep, UnrollForWithStep
 from tilelang import _ffi_api
-from tvm.tirx.script.builder import frame
+from tvm.script.ir_builder.tir import frame
 
 
 def Parallel(
-    *extents: int | tirx.PrimExpr,
+    *extents: int | tir.PrimExpr,
     coalesced_width: int | None = None,
     loop_layout: Any | None = None,
     prefer_async: bool | None = None,
@@ -88,30 +88,30 @@ def Parallel(
 
 
 def Persistent(
-    domain: list[tirx.PrimExpr],
-    wave_size: tirx.PrimExpr,
-    index: tirx.PrimExpr,
-    group_size: tirx.PrimExpr | int | None = 8,
+    domain: list[tir.PrimExpr],
+    wave_size: tir.PrimExpr,
+    index: tir.PrimExpr,
+    group_size: tir.PrimExpr | int | None = 8,
 ) -> frame.ForFrame:
     """Tools to construct persistent for loop.
 
     Parameters
     ----------
-    domain : List[tirx.PrimExpr]
+    domain : List[tir.PrimExpr]
         The list of dominators.
     wave_size : int
         The wave size.
     index : int
         The tile index in one wave.
-    group_size : tirx.PrimExpr
+    group_size : tir.PrimExpr
         The group size.
     """
     return _ffi_api.Persistent(domain, wave_size, index, group_size)
 
 
 def Pipelined(
-    start: tirx.PrimExpr,
-    stop: tirx.PrimExpr | None = None,
+    start: tir.PrimExpr,
+    stop: tir.PrimExpr | None = None,
     num_stages: int = 0,
     order: list[int] | None = None,
     stage: list[int] | None = None,
@@ -128,49 +128,7 @@ def Pipelined(
         The maximum value of iteration.
     num_stages : int
         The max number of buffer used between pipeline producers and consumers.
-        For compiler-inferred pipelines, if ``num_stages`` is 0, pipeline will
-        not be enabled. For manually scheduled pipelines, prefer specifying
-        ``order`` and ``stage`` without ``num_stages``; the pipeline depth is
-        inferred as ``max(stage) + 1``.
-    order : Optional[List[int]]
-        Optional manual emission order for scheduled statements in the loop
-        body. This list should describe executable pipeline statements such as
-        copies, fills, GEMMs, reductions, stores, waits, or commits.
-    stage : Optional[List[int]]
-        Optional manual pipeline stage for each scheduled statement in the loop
-        body. The list is aligned with ``order`` and follows the same statement
-        counting rule.
-    sync : Optional[List[List[int]]]
-        Optional synchronization metadata for manual pipeline lowering.
-    group : Optional[List[List[int]]]
-        Optional producer grouping metadata for manual pipeline lowering.
-
-    Notes
-    -----
-    Replayable scalar ``Bind`` statements created by local aliases are not
-    scheduled pipeline operations and should not consume entries in ``order``
-    or ``stage``. For example, in the body below only the copy and store need
-    annotation entries; ``base`` is replayed automatically at each use:
-
-    .. code-block:: python
-
-        for i in T.Pipelined(n, order=[1, 0], stage=[0, 1]):
-            base: T.int32 = i * block
-            T.copy(A[base], shared)
-            T.copy(shared, B[base])
-
-    A replayable ``Bind`` may also read a buffer that is not written by the
-    pipeline body, such as ``idx = Ids[i]``. If a ``Bind`` reads a buffer that
-    is written inside the same pipeline body, it is kept as a scheduled
-    statement because the load has a pipeline dependency and cannot be freely
-    replayed.
-
-    Older code that included replayable scalar ``Bind`` entries in
-    ``order``/``stage`` is accepted for compatibility, but those entries are
-    ignored by the pipeline passes. New code should annotate only the scheduled
-    statements. Avoid setting ``num_stages`` together with manual
-    ``order``/``stage`` unless you intentionally need an explicit depth
-    override.
+        if num_stages is 0, pipeline will not be enabled.
     Returns
     -------
     res : frame.ForFrame
@@ -192,9 +150,9 @@ def Pipelined(
 
 
 def serial(
-    start: tirx.PrimExpr,
-    stop: tirx.PrimExpr | None = None,
-    step: tirx.PrimExpr | None = None,
+    start: tir.PrimExpr,
+    stop: tir.PrimExpr | None = None,
+    step: tir.PrimExpr | None = None,
     *,
     annotations: dict[str, Any] | None = None,
 ) -> frame.ForFrame:
@@ -233,9 +191,9 @@ def serial(
 
 
 def unroll(
-    start: tirx.PrimExpr,
-    stop: tirx.PrimExpr | None = None,
-    step: tirx.PrimExpr | None = None,
+    start: tir.PrimExpr,
+    stop: tir.PrimExpr | None = None,
+    step: tir.PrimExpr | None = None,
     *,
     explicit: bool = False,
     unroll_factor: int | None = None,
@@ -301,9 +259,9 @@ def unroll(
 
 
 def Serial(
-    start: tirx.PrimExpr,
-    stop: tirx.PrimExpr | None = None,
-    step: tirx.PrimExpr | None = None,
+    start: tir.PrimExpr,
+    stop: tir.PrimExpr | None = None,
+    step: tir.PrimExpr | None = None,
     *,
     annotations: dict[str, Any] | None = None,
 ) -> frame.ForFrame:
@@ -313,9 +271,9 @@ def Serial(
 
 
 def Unroll(
-    start: tirx.PrimExpr,
-    stop: tirx.PrimExpr | None = None,
-    step: tirx.PrimExpr | None = None,
+    start: tir.PrimExpr,
+    stop: tir.PrimExpr | None = None,
+    step: tir.PrimExpr | None = None,
     *,
     explicit: bool = False,
     unroll_factor: int | None = None,
@@ -327,8 +285,8 @@ def Unroll(
 
 
 def vectorized(
-    start: tirx.PrimExpr,
-    stop: tirx.PrimExpr | None = None,
+    start: tir.PrimExpr,
+    stop: tir.PrimExpr | None = None,
     *,
     annotations: dict[str, Any] | None = None,
 ) -> frame.ForFrame:
@@ -354,8 +312,8 @@ def vectorized(
 
 
 def Vectorized(
-    start: tirx.PrimExpr,
-    stop: tirx.PrimExpr | None = None,
+    start: tir.PrimExpr,
+    stop: tir.PrimExpr | None = None,
     *,
     annotations: dict[str, Any] | None = None,
 ) -> frame.ForFrame:

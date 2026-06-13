@@ -1,9 +1,9 @@
-from tvm import tirx
+from tvm import tir
 import tilelang.language as T
 
 
 # https://docs.nvidia.com/cuda/curand/device-api-overview.html#device-api-overview
-def rng_init(seed, seq=None, off=0, generator="curandStatePhilox4_32_10_t") -> tirx.PrimExpr:
+def rng_init(seed, seq=None, off=0, generator="curandStatePhilox4_32_10_t") -> tir.PrimExpr:
     """Initialize CUDA curand random number generator state
 
     Parameters
@@ -24,20 +24,20 @@ def rng_init(seed, seq=None, off=0, generator="curandStatePhilox4_32_10_t") -> t
         The random number generator state handle.
     """
     assert generator in ["curandStateMRG32k3a_t", "curandStatePhilox4_32_10_t", "curandStateXORWOW_t"]
-    seed = tirx.convert(seed)
+    seed = tir.convert(seed)
     if seq is None:
         bx = T.get_block_binding()
         ex = T.kernel.get_thread_extent()
         tx = T.get_thread_binding()
         id = tx + bx * ex
-        seq = tirx.convert(id)
+        seq = tir.convert(id)
     else:
-        seq = tirx.convert(seq)
-    off = tirx.convert(off)
-    return tirx.call_intrin("void", tirx.op.Op.get("tl.rng_init"), seed, seq, off, generator)
+        seq = tir.convert(seq)
+    off = tir.convert(off)
+    return tir.call_intrin("void", tir.op.Op.get("tl.rng_init"), seed, seq, off, generator)
 
 
-def rng_rand() -> tirx.PrimExpr:
+def rng_rand() -> tir.PrimExpr:
     """Generate a 32-bit unsigned random integer
 
     Returns
@@ -45,10 +45,10 @@ def rng_rand() -> tirx.PrimExpr:
     random_value : PrimExpr
         A 32-bit unsigned random integer.
     """
-    return tirx.call_intrin("uint32", tirx.op.Op.get("tl.rng_rand"))
+    return tir.call_intrin("uint32", tir.op.Op.get("tl.rng_rand"))
 
 
-def rng_rand_float(bit=32, dist="uniform") -> tirx.PrimExpr:
+def rng_rand_float(bit=32, dist="uniform") -> tir.PrimExpr:
     """Generate a random float
 
     Parameters
@@ -65,4 +65,4 @@ def rng_rand_float(bit=32, dist="uniform") -> tirx.PrimExpr:
     """
     assert bit in [32, 64]
     assert dist in ["uniform", "normal"]
-    return tirx.call_intrin("float" + str(bit), tirx.op.Op.get("tl.rng_rand_float"), dist)
+    return tir.call_intrin("float" + str(bit), tir.op.Op.get("tl.rng_rand_float"), dist)

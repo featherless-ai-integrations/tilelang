@@ -2,11 +2,16 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Generic, Any, Literal, ParamSpec, TypeVar
-from collections.abc import Callable
+from typing import Callable, Generic, Any, Literal, TypeVar
 from contextlib import AbstractContextManager
 from collections.abc import Iterable
 
+
+# Python 3.9 compatibility for ParamSpec
+try:
+    from typing import ParamSpec
+except ImportError:  # Python < 3.10
+    from typing_extensions import ParamSpec
 import inspect
 
 # from .utils import get_ast, get_compiled_object
@@ -469,10 +474,8 @@ class DSLMutator(ast.NodeTransformer):
         arg_names = set()
         all_args = node.args.posonlyargs + node.args.args
         if node.args.vararg is not None:
-            all_args.append(node.args.vararg)
+            all_args += node.args.vararg
         all_args += node.args.kwonlyargs
-        if node.args.kwarg is not None:
-            all_args.append(node.args.kwarg)
         for arg in all_args:
             name = arg.arg
             arg_names.add(name)
@@ -489,8 +492,7 @@ class DSLMutator(ast.NodeTransformer):
         node.body = stmts + node.body
         node.decorator_list.clear()
         name = node.name
-        if node.args.kwarg is None:
-            node.args.kwarg = ast.arg(arg="__kwargs")
+        node.args.kwarg = ast.arg(arg="__kwargs")
         node = SpanAttacher("__tb_fl", "__tb_fn").visit(node)
         return quote1(
             f"def make_closure({', '.join(self.nonlocals.keys())}):\n"
@@ -587,11 +589,11 @@ class DSLMutator(ast.NodeTransformer):
         is_kernel_ctx = False
         for expr in node.items:
             cexpr = expr.context_expr
-            if isinstance(cexpr, ast.Call) and isinstance(cexpr.func, ast.Attribute) and cexpr.func.attr in ("Kernel", "ClusterKernel"):
+            if isinstance(cexpr, ast.Call) and isinstance(cexpr.func, ast.Attribute) and cexpr.func.attr == "Kernel":
                 eval_res = self._try_eval(cexpr.func)
-                from tilelang.language import Kernel, ClusterKernel
+                from tilelang.language import Kernel
 
-                if eval_res is Kernel or eval_res is ClusterKernel:
+                if eval_res is Kernel:
                     is_kernel_ctx = True
         node = self.generic_visit(node)
         for expr in node.items:

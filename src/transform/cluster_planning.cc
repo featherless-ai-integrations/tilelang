@@ -3,21 +3,17 @@
  * \brief Plan the cluster for GPU(sm90+) blocks
  */
 
-#include "support/check.h"
 #include <tvm/arith/analyzer.h>
-#include <tvm/ir/cast.h>
-#include <tvm/s_tir/analysis.h>
-#include <tvm/tirx/analysis.h>
-#include <tvm/tirx/stmt.h>
-#include <tvm/tirx/stmt_functor.h>
-#include <tvm/tirx/transform.h>
+#include <tvm/ffi/function.h>
+#include <tvm/ffi/reflection/registry.h>
+#include <tvm/tir/analysis.h>
+#include <tvm/tir/stmt_functor.h>
+#include <tvm/tir/transform.h>
+
+#include "../support/ffi_aliases.h"
 
 namespace tvm {
-namespace tl {
-
-using namespace tirx;
-using namespace ffi;
-using tirx::GetSBlockReadWriteRegion;
+namespace tir {
 
 class ClusterPlanner {
 public:
@@ -27,11 +23,10 @@ public:
     for (const auto &[_, buffer] : f->buffer_map) {
       buffer_data_to_buffer_.Set(buffer->data, buffer);
     }
-    SBlock block(/*iter_vars=*/{}, /*reads=*/{}, /*writes=*/{},
-                 /*name_hint=*/"",
-                 /*body*/ f->body);
+    Block block(/*iter_vars=*/{}, /*reads=*/{}, /*writes=*/{}, /*name_hint=*/"",
+                /*body*/ f->body);
     Array<Array<BufferRegion>> access =
-        GetSBlockReadWriteRegion(block, buffer_data_to_buffer_);
+        GetBlockReadWriteRegion(block, buffer_data_to_buffer_);
     auto reads = access[0];
 
     BlockIdxVisitor blockIdx_visitor;
@@ -103,7 +98,7 @@ private:
   public:
     BlockIdxVisitor() {};
     void VisitStmt_(const AttrStmtNode *attr) final {
-      if (attr->attr_key == tirx::attr::thread_extent) {
+      if (attr->attr_key == attr::thread_extent) {
         IterVar iv = Downcast<IterVar>(attr->node);
         String tag = iv->thread_tag;
         if (tag == "blockIdx.x" || tag == "blockIdx.y" || tag == "blockIdx.z")
@@ -122,20 +117,19 @@ private:
 PrimFunc ClusterPlanning(PrimFunc f) { return ClusterPlanner::Substitute(f); }
 
 namespace transform {
-using namespace tirx::transform;
 
 tvm::transform::Pass ClusterPlanning() {
   auto pass_func = [=](PrimFunc f, const IRModule &m, const PassContext &ctx) {
-    return tvm::tl::ClusterPlanning(std::move(f));
+    return ClusterPlanning(std::move(f));
   };
   return CreatePrimFuncPass(pass_func, 0, "tl.ClusterPlanning", {});
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
-  namespace refl = reflection;
+  namespace refl = tvm::ffi::reflection;
   refl::GlobalDef().def("tl.transform.ClusterPlanning", ClusterPlanning);
 }
 } // namespace transform
 
-} // namespace tl
+} // namespace tir
 } // namespace tvm

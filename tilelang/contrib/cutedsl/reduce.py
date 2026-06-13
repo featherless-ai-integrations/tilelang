@@ -18,33 +18,116 @@ __all__ = [
     "bar_sync_ptx",
     "CumSum1D",
     "CumSum2D",
-    "CumMax1D",
-    "CumMax2D",
     "NamedBarrier",
     "AllReduce",
 ]
 
 import cutlass
 import cutlass.cute as cute
-from cutlass.cute.typing import Int32
-from cutlass._mlir.dialects import nvvm
+from cutlass.cute.typing import Int32, Float32
+from cutlass.base_dsl.typing import Numeric
+from cutlass.cutlass_dsl import dsl_user_op, T
+from cutlass._mlir.dialects import arith, nvvm
 from cutlass.cute.arch.nvvm_wrappers import shuffle_sync_op
 
 
+def _is_int_type(val):
+    """Check if a value is an integer Numeric type."""
+    if isinstance(val, Int32):
+        return True
+    if isinstance(val, Numeric) and hasattr(val, "mlir_type"):
+        from cutlass._mlir import ir as mlir_ir
+
+        return isinstance(val.mlir_type, mlir_ir.IntegerType)
+    if isinstance(val, int) and not isinstance(val, bool):
+        return True
+    # Check for signless integer ArithValue (from DSL expressions)
+    if hasattr(val, "ir_value"):
+        try:
+            from cutlass._mlir import ir as mlir_ir
+
+            ir_val = val.ir_value()
+            if hasattr(ir_val, "type") and isinstance(ir_val.type, mlir_ir.IntegerType):
+                return True
+        except Exception:
+            pass
+    return False
+
+
+@dsl_user_op
+def _fmin(a, b, c=None, *, loc=None, ip=None):
+    return Float32(
+        nvvm.fmin(
+            T.f32(),
+            Float32(a).ir_value(loc=loc, ip=ip),
+            Float32(b).ir_value(loc=loc, ip=ip),
+            c=Float32(c).ir_value(loc=loc, ip=ip) if c is not None else None,
+            loc=loc,
+            ip=ip,
+        )
+    )
+
+
+@dsl_user_op
+def _imin(a, b, *, loc=None, ip=None):
+    return Int32(
+        arith.minsi(
+            Int32(a).ir_value(loc=loc, ip=ip),
+            Int32(b).ir_value(loc=loc, ip=ip),
+            loc=loc,
+            ip=ip,
+        )
+    )
+
+
+@dsl_user_op
+def _fmax(a, b, c=None, *, loc=None, ip=None):
+    return Float32(
+        nvvm.fmax(
+            T.f32(),
+            Float32(a).ir_value(loc=loc, ip=ip),
+            Float32(b).ir_value(loc=loc, ip=ip),
+            c=Float32(c).ir_value(loc=loc, ip=ip) if c is not None else None,
+            loc=loc,
+            ip=ip,
+        )
+    )
+
+
+@dsl_user_op
+def _imax(a, b, *, loc=None, ip=None):
+    return Int32(
+        arith.maxsi(
+            Int32(a).ir_value(loc=loc, ip=ip),
+            Int32(b).ir_value(loc=loc, ip=ip),
+            loc=loc,
+            ip=ip,
+        )
+    )
+
+
 def min(a, b, c=None):
-    """Type-preserving min for scalar CuTeDSL values."""
-    result = cutlass.min(a, b)
-    if c is not None:
-        result = cutlass.min(result, c)
-    return result
+    """Type-aware min: uses arith.minsi for integers, nvvm.fmin for floats.
+    Falls back to integer path if float conversion fails (signless int types)."""
+    if _is_int_type(a) and _is_int_type(b):
+        return _imin(a, b)
+    try:
+        return _fmin(a, b, c)
+    except Exception:
+        # Float32 conversion may fail for signless integer types
+        return _imin(a, b)
 
 
 def max(a, b, c=None):
-    """Type-preserving max for scalar CuTeDSL values."""
-    result = cutlass.max(a, b)
-    if c is not None:
-        result = cutlass.max(result, c)
-    return result
+    """Type-aware max: uses arith.maxsi for integers, nvvm.fmax for floats.
+    Falls back to integer path if float conversion fails (signless int types)."""
+    if _is_int_type(a) and _is_int_type(b):
+        return _imax(a, b)
+    try:
+        return _fmax(a, b, c)
+    except Exception:
+        # Float32 conversion may fail for signless integer types
+        return _imax(a, b)
 
 
 class SumOp:
@@ -157,41 +240,10 @@ def _warp_prefix_sum_reverse(val, lane, MASK=0xFFFFFFFF):
     return val
 
 
-def _warp_prefix_max_forward(val, lane, MASK=0xFFFFFFFF):
-    """Warp-level inclusive prefix max (forward)."""
-    n = __shfl_up_sync(MASK, val, 1)
-    val = cutlass.select_(lane >= 1, max(val, n), val)
-    n = __shfl_up_sync(MASK, val, 2)
-    val = cutlass.select_(lane >= 2, max(val, n), val)
-    n = __shfl_up_sync(MASK, val, 4)
-    val = cutlass.select_(lane >= 4, max(val, n), val)
-    n = __shfl_up_sync(MASK, val, 8)
-    val = cutlass.select_(lane >= 8, max(val, n), val)
-    n = __shfl_up_sync(MASK, val, 16)
-    val = cutlass.select_(lane >= 16, max(val, n), val)
-    return val
-
-
-def _warp_prefix_max_reverse(val, lane, MASK=0xFFFFFFFF):
-    """Warp-level inclusive prefix max (reverse)."""
-    SEG = 32
-    n = __shfl_down_sync(MASK, val, 1)
-    val = cutlass.select_(lane < SEG - 1, max(val, n), val)
-    n = __shfl_down_sync(MASK, val, 2)
-    val = cutlass.select_(lane < SEG - 2, max(val, n), val)
-    n = __shfl_down_sync(MASK, val, 4)
-    val = cutlass.select_(lane < SEG - 4, max(val, n), val)
-    n = __shfl_down_sync(MASK, val, 8)
-    val = cutlass.select_(lane < SEG - 8, max(val, n), val)
-    n = __shfl_down_sync(MASK, val, 16)
-    val = cutlass.select_(lane < SEG - 16, max(val, n), val)
-    return val
-
-
 class CumSum1D:
     """
     1D cumulative sum operation.
-    Based on tl::CumSum1D from scan.h
+    Based on tl::CumSum1D from reduce.h
 
     Template params:
         threads: Number of threads
@@ -221,7 +273,7 @@ class CumSum1D:
         dst_tensor = cute.make_tensor(dst, (N,))
 
         # Load value (0 if out of bounds)
-        val = src_tensor.element_type(0)
+        val = Float32(0.0)
         if tidx < N:
             val = src_tensor[tidx]
 
@@ -239,7 +291,7 @@ class CumSum1D:
 class CumSum2D:
     """
     2D cumulative sum operation.
-    Based on tl::CumSum2D from scan.h
+    Based on tl::CumSum2D from reduce.h
 
     Template params:
         threads: Number of threads (must be power of 2, 32-1024)
@@ -286,7 +338,7 @@ class CumSum2D:
             idx = row * W + col
 
             # Load value (0 if out of bounds)
-            val = src_tensor.element_type(0)
+            val = Float32(0.0)
             if row < H and col < W:
                 val = src_tensor[idx]
 
@@ -310,7 +362,7 @@ class CumSum2D:
             idx = row_in_col * W + col
 
             # Load value (0 if out of bounds)
-            val = src_tensor.element_type(0)
+            val = Float32(0.0)
             if row_in_col < H and col < W:
                 val = src_tensor[idx]
 
@@ -320,101 +372,6 @@ class CumSum2D:
                 val = _warp_prefix_sum_forward(val, lane, MASK)
 
             # Store result - only valid threads write
-            if row_in_col < H and col < W:
-                dst_tensor[idx] = val
-
-
-class CumMax1D:
-    """
-    1D cumulative maximum operation.
-    Based on tl::CumMax1D from scan.h
-    """
-
-    def __init__(self, threads: cutlass.Constexpr[int], reverse: cutlass.Constexpr[bool]):
-        self.threads = threads
-        self.reverse = reverse
-        self.SEG = 32
-
-    @cute.jit
-    def run(self, src: cute.Pointer, dst: cute.Pointer, N):
-        MASK = 0xFFFFFFFF
-        tidx, _, _ = cute.arch.thread_idx()
-        lane = tidx % self.SEG
-
-        src_tensor = cute.make_tensor(src, (N,))
-        dst_tensor = cute.make_tensor(dst, (N,))
-
-        val = src_tensor[0]
-        if tidx < N:
-            val = src_tensor[tidx]
-
-        if self.reverse:
-            val = _warp_prefix_max_reverse(val, lane, MASK)
-        else:
-            val = _warp_prefix_max_forward(val, lane, MASK)
-
-        if tidx < N:
-            dst_tensor[tidx] = val
-
-
-class CumMax2D:
-    """
-    2D cumulative maximum operation.
-    Based on tl::CumMax2D from scan.h
-    """
-
-    def __init__(self, threads: cutlass.Constexpr[int], dim: cutlass.Constexpr[int], reverse: cutlass.Constexpr[bool]):
-        self.threads = threads
-        self.dim = dim
-        self.reverse = reverse
-        self.SEG = 32
-
-    @cute.jit
-    def run(self, src: cute.Pointer, dst: cute.Pointer, H, W):
-        MASK = 0xFFFFFFFF
-        tidx, _, _ = cute.arch.thread_idx()
-        lane = tidx % self.SEG
-        row = tidx // self.SEG
-
-        src_tensor = cute.make_tensor(src, (H * W,))
-        dst_tensor = cute.make_tensor(dst, (H * W,))
-
-        if self.dim == 1:
-            col = lane
-            idx = row * W + col
-
-            val = src_tensor.element_type(0)
-            if row < H:
-                val = src_tensor[row * W]
-            if row < H and col < W:
-                val = src_tensor[idx]
-
-            if self.reverse:
-                val = _warp_prefix_max_reverse(val, lane, MASK)
-            else:
-                val = _warp_prefix_max_forward(val, lane, MASK)
-
-            if row < H and col < W:
-                dst_tensor[idx] = val
-        else:
-            assert H <= 32, (
-                f"CumMax2D dim=0 only supports H <= 32 (got H={H}). Use dim=1 for row-wise cummax or implement multi-warp column iteration."
-            )
-            col = row
-            row_in_col = lane
-            idx = row_in_col * W + col
-
-            val = src_tensor.element_type(0)
-            if col < W:
-                val = src_tensor[col]
-            if row_in_col < H and col < W:
-                val = src_tensor[idx]
-
-            if self.reverse:
-                val = _warp_prefix_max_reverse(val, lane, MASK)
-            else:
-                val = _warp_prefix_max_forward(val, lane, MASK)
-
             if row_in_col < H and col < W:
                 dst_tensor[idx] = val
 

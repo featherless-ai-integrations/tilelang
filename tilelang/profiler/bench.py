@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Literal
-from collections.abc import Callable
+from typing import Callable, Literal
 
 import torch
 
@@ -60,7 +59,6 @@ class suppress_stdout_stderr:
 IS_CUDA = torch.cuda.is_available()
 device = "cuda:0" if IS_CUDA else "mps:0"
 Event = torch.cuda.Event if IS_CUDA else torch.mps.Event
-_CACHE_FLUSH_ID = "tilelang::cache_flush"
 
 
 def do_bench(
@@ -183,36 +181,25 @@ def _bench_with_cupti(
     with suppress_stdout_stderr():
         schedule = torch.profiler.schedule(wait=1, warmup=0, active=1, repeat=1)
         profiler = torch.profiler.profile(
-            activities=[
-                torch.profiler.ProfilerActivity.CPU,
-                torch.profiler.ProfilerActivity.CUDA,
-            ],
+            activities=[torch.profiler.ProfilerActivity.CUDA],
             schedule=schedule,
         )
 
         with profiler:
             for _ in range(2):
                 for _ in range(n_repeat):
-                    with torch.profiler.record_function(_CACHE_FLUSH_ID):
-                        cache.zero_()
+                    cache.zero_()
                     fn()
                 profiler.step()
 
-    # `cache.zero_()` and user code such as `torch.zeros` can share the same
-    # generated kernel name, so exclude only the annotated cache flush range.
-    def is_cuda_event(event):
-        return getattr(getattr(event, "device_type", None), "name", "") == "CUDA"
-
+    # Calculate average kernel time, excluding cache-clearing overhead
     total_cuda_time = 0.0
     excluded_time = 0.0
+    excluded_kernels = "at::native::vectorized_elementwise"
 
-    for event in profiler.events():
-        if not is_cuda_event(event):
-            continue
-
-        if not event.is_user_annotation:
-            total_cuda_time += event.self_device_time_total
-        elif event.key == _CACHE_FLUSH_ID:
+    for event in profiler.key_averages():
+        total_cuda_time += event.self_device_time_total
+        if excluded_kernels in event.key:
             excluded_time += event.self_device_time_total
 
     kernel_time_us = (total_cuda_time - excluded_time) / n_repeat

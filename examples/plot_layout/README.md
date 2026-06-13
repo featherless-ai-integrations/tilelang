@@ -5,7 +5,7 @@ Example Code
 ```python
 import tilelang.language as T
 from tvm import DataType
-from tvm.tirx import IndexMap
+from tvm.tir import IndexMap
 from typing import Literal, Callable
 from tilelang.cuda.intrinsics.layout.utils import get_mma_micro_size
 from tilelang.tools import plot_layout

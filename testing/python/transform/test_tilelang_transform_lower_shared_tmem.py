@@ -5,14 +5,13 @@ import tilelang.language as T
 import tilelang.testing
 
 
-TARGET = tvm.target.Target({"kind": "cuda", "arch": "sm_100"})
+TARGET = tvm.target.Target("cuda -arch=sm_100")
 
 
 def _apply(func):
     mod = tvm.IRModule.from_expr(func.with_attr("global_symbol", "main"))
-    mod = tvm.tirx.transform.BindTarget(TARGET)(mod)
-    mod = tl.transform.MaterializeKernelLaunch()(mod)
-    mod = tl.cuda.transform.LowerSharedTmem()(mod)
+    mod = tvm.tir.transform.BindTarget(TARGET)(mod)
+    mod = tl.transform.LowerSharedTmem()(mod)
     return mod
 
 
@@ -20,10 +19,10 @@ def _collect_calls(stmt, op_name: str):
     calls = []
 
     def visitor(node):
-        if isinstance(node, tvm.tirx.Call) and hasattr(node, "op") and hasattr(node.op, "name") and node.op.name == op_name:
+        if isinstance(node, tvm.tir.Call) and hasattr(node, "op") and hasattr(node.op, "name") and node.op.name == op_name:
             calls.append(node)
 
-    tvm.tirx.stmt_functor.post_order_visit(stmt, visitor)
+    tvm.tir.stmt_functor.post_order_visit(stmt, visitor)
     return calls
 
 

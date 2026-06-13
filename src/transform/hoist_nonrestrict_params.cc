@@ -7,21 +7,19 @@
  * deduplicated result back to the PrimFunc attrs. This makes annotation
  * placement within the function body flexible for frontends.
  */
-#include "support/check.h"
-#include <tvm/ir/cast.h>
+#include <tvm/ffi/container/array.h>
+#include <tvm/ffi/reflection/registry.h>
 #include <tvm/ir/transform.h>
-#include <tvm/tirx/function.h>
-#include <tvm/tirx/stmt.h>
-#include <tvm/tirx/stmt_functor.h>
-#include <tvm/tirx/transform.h>
+#include <tvm/tir/function.h>
+#include <tvm/tir/stmt.h>
+#include <tvm/tir/stmt_functor.h>
+#include <tvm/tir/transform.h>
 
 #include "../op/builtin.h"
 
 namespace tvm {
 namespace tl {
-
-using namespace ffi;
-using namespace tvm::tirx;
+using namespace tvm::tir;
 
 class NonRestrictCollector : public StmtVisitor {
 public:
@@ -58,10 +56,10 @@ private:
     collected_.push_back(v);
   }
 
-  void VisitStmt_(const SBlockNode *op) final {
+  void VisitStmt_(const BlockNode *op) final {
     auto it = op->annotations.find(attr::kNonRestrictParams);
     if (it != op->annotations.end()) {
-      if (const auto *arr = (*it).second.as<ArrayObj>()) {
+      if (const auto *arr = (*it).second.as<ffi::ArrayObj>()) {
         // Downcast directly to Array<Var> for convenience
         Array<Var> vars = tvm::Downcast<Array<Var>>((*it).second);
         for (const Var &v : vars) {
@@ -119,7 +117,7 @@ tvm::transform::Pass HoistNonRestrictParams() {
                       const tvm::transform::PassContext &) {
     return tvm::tl::HoistNonRestrictParams(std::move(f));
   };
-  return tvm::tirx::transform::CreatePrimFuncPass(
+  return tvm::tir::transform::CreatePrimFuncPass(
       pass_func, 0, "tl.HoistNonRestrictParams", {});
 }
 

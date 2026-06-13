@@ -5,8 +5,7 @@
 #ifndef TVM_TL_TRANSFORM_LAYOUT_REDUCER_H_
 #define TVM_TL_TRANSFORM_LAYOUT_REDUCER_H_
 
-#include "support/check.h"
-#include <tvm/tirx/op.h>
+#include <tvm/tir/op.h>
 
 #include "../layout/layout.h"
 
@@ -58,8 +57,6 @@ namespace tvm {
  */
 namespace tl {
 
-using namespace ffi;
-
 enum class ReducerOpType { SUM, MAX, MIN };
 enum class ReducerRepType { ALL, NONE };
 
@@ -75,7 +72,7 @@ struct ReducerInfoNode : Object {
 struct ReducerInfo : ObjectRef {
 public:
   TVM_DLL ReducerInfo(const String &op_str, const String &rep_str) {
-    data_ = make_object<ReducerInfoNode>(op_str, rep_str);
+    data_ = tvm::ffi::make_object<ReducerInfoNode>(op_str, rep_str);
   }
 
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(ReducerInfo, ObjectRef,

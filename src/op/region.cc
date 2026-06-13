@@ -12,14 +12,11 @@
  */
 
 #include "region.h"
-#include "support/check.h"
-#include <tvm/ffi/extra/structural_equal.h>
-#include <tvm/tirx/op.h>
+#include <tvm/tir/op.h>
 
 namespace tvm {
 namespace tl {
-using namespace tirx;
-using namespace ffi;
+using namespace tir;
 
 RegionOp::RegionOp(Array<PrimExpr> args, Map<String, ObjectRef> annotations) {
   size_t n = args.size();
@@ -48,7 +45,7 @@ RegionOp::RegionOp(Array<PrimExpr> args, Map<String, ObjectRef> annotations) {
       ranges.push_back(Range::FromMinExtent(index, extent));
     }
   }
-  ObjectPtr<RegionOpNode> node = make_object<RegionOpNode>();
+  ObjectPtr<RegionOpNode> node = tvm::ffi::make_object<RegionOpNode>();
   node->buffer_ = load->buffer;
   node->access_mask_ = static_cast<int>(*as_const_int(args[1]));
   node->ranges_ = ranges;
@@ -56,7 +53,7 @@ RegionOp::RegionOp(Array<PrimExpr> args, Map<String, ObjectRef> annotations) {
 }
 
 TileOperator RegionOpNode::Clone() const {
-  auto op = make_object<RegionOpNode>(*this);
+  auto op = tvm::ffi::make_object<RegionOpNode>(*this);
   return RegionOp(op);
 }
 

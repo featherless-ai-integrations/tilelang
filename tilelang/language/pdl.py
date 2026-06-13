@@ -1,4 +1,4 @@
-from tvm import tirx
+from tvm import tir
 
 
 __all__ = [
@@ -7,15 +7,15 @@ __all__ = [
 ]
 
 
-def pdl_trigger() -> tirx.PrimExpr:
-    return tirx.call_intrin(
+def pdl_trigger() -> tir.PrimExpr:
+    return tir.call_intrin(
         "void",
-        tirx.op.Op.get("tl.pdl_trigger"),
+        tir.op.Op.get("tl.pdl_trigger"),
     )
 
 
-def pdl_sync() -> tirx.PrimExpr:
-    return tirx.call_intrin(
+def pdl_sync() -> tir.PrimExpr:
+    return tir.call_intrin(
         "void",
-        tirx.op.Op.get("tl.pdl_sync"),
+        tir.op.Op.get("tl.pdl_sync"),
     )

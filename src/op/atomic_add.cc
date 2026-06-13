@@ -5,12 +5,10 @@
  */
 
 #include "./atomic_add.h"
-#include "support/check.h"
 #include "utils.h"
-#include <tvm/ir/cast.h>
-#include <tvm/tirx/builtin.h>
-#include <tvm/tirx/op.h>
-#include <tvm/tirx/op_attr_types.h>
+#include <tvm/tir/builtin.h>
+#include <tvm/tir/op.h>
+#include <tvm/tir/op_attr_types.h>
 
 #include "builtin.h"
 
@@ -19,7 +17,7 @@
 namespace tvm {
 namespace tl {
 
-using namespace tirx;
+using namespace tir;
 
 namespace {
 
@@ -35,7 +33,7 @@ const AtomicAddImpl &ResolveAtomicAddImpl(Target target) {
     if (impl.match_target(target)) {
       ICHECK(matched_impl == nullptr)
           << "tl.atomic_add found multiple target-specific implementations for "
-          << target->str() << ": " << matched_impl->name << " and "
+          << target->ToDebugString() << ": " << matched_impl->name << " and "
           << impl.name;
       matched_impl = &impl;
     }
@@ -43,7 +41,7 @@ const AtomicAddImpl &ResolveAtomicAddImpl(Target target) {
   ICHECK(matched_impl != nullptr)
       << "tl.atomic_add requires a target-specific implementation, but no "
          "atomic_add implementation is registered for "
-      << target->str();
+      << target->ToDebugString();
   return *matched_impl;
 }
 
@@ -68,19 +66,18 @@ void RegisterAtomicAddImpl(AtomicAddImpl impl) {
  * @param args Call-style PrimExprs where:
  *             - args[0] is the source region call,
  *             - args[1] is the destination region call.
- * @param annotations ffi::Map containing optional keys:
+ * @param annotations Map containing optional keys:
  *             - "use_tma": whether to use TMA for memory operations
  *             - "memory_order": memory order for atomic operations
  * Notes:
  * - The constructor checks that args[0] and args[1] are region-compatible.
  * - The constructed node is stored in this->data_.
  */
-AtomicAdd::AtomicAdd(ffi::Array<PrimExpr> args,
-                     ffi::Map<ffi::String, ffi::ObjectRef> annotations) {
+AtomicAdd::AtomicAdd(Array<PrimExpr> args, Map<String, ObjectRef> annotations) {
   ICHECK(args.size() >= 2)
       << "AtomicAdd expects at least 2 arguments (src, dst), got "
       << args.size();
-  ffi::ObjectPtr<AtomicAddNode> node = tvm::ffi::make_object<AtomicAddNode>();
+  ObjectPtr<AtomicAddNode> node = tvm::ffi::make_object<AtomicAddNode>();
   std::vector<AccessRegion> access_regions;
 
   if (IsBufferLikeExpr(args[0])) {

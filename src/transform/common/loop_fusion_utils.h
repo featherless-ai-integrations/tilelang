@@ -22,13 +22,11 @@
  * \brief Common utilities for TL transforms
  */
 
-#include "support/check.h"
-#include <tvm/ir/cast.h>
-#include <tvm/s_tir/utils.h>
-#include <tvm/tirx/builtin.h>
-#include <tvm/tirx/op.h>
-#include <tvm/tirx/stmt_functor.h>
-#include <tvm/tirx/transform.h>
+#include <tvm/tir/builtin.h>
+#include <tvm/tir/op.h>
+#include <tvm/tir/stmt_functor.h>
+#include <tvm/tir/transform.h>
+#include <tvm/tir/utils.h>
 
 #include <queue>
 
@@ -40,7 +38,7 @@
 namespace tvm {
 namespace tl {
 
-using namespace tirx;
+using namespace tir;
 using arith::IRMutatorWithAnalyzer;
 
 class FragmentAccessDetector : public StmtExprVisitor {
@@ -72,7 +70,7 @@ private:
   bool IsFragmentBuffer(const Buffer &buffer) {
     // The storage scope is often encoded in the buffer->data var name or
     // associated attributes.
-    ffi::String scope = buffer.scope();
+    String scope = buffer.scope();
     return scope == "local.fragment";
   }
 
@@ -207,7 +205,7 @@ private:
       return FloorMod(FloorDiv(fused_var, strides[i]), extents[i]);
     };
 
-    ffi::Map<Var, PrimExpr> var_map;
+    Map<Var, PrimExpr> var_map;
     for (size_t i = 0; i < loop_chain.size(); i++) {
       const ForNode *loop = loop_chain[i];
       var_map.Set(loop->loop_var,
@@ -231,7 +229,7 @@ private:
       size_t old_dim = old_layout->InputDim();
       // Only attempt to fuse when dimensions match the number of fused loops.
       if (old_dim == loop_chain.size()) {
-        ffi::Array<PrimExpr> new_shape = {fused_extent};
+        Array<PrimExpr> new_shape = {fused_extent};
         Fragment fused_layout =
             Downcast<Fragment>(old_layout->Reshape(new_shape, analyzer_));
         fused_for.CopyOnWrite()->annotations.Set(attr::kParallelLoopLayout,

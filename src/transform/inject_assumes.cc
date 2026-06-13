@@ -6,30 +6,25 @@
 
 #include "common/assume.h"
 #include "common/attr.h"
-#include "support/check.h"
 #include "tvm/arith/analyzer.h"
+#include "tvm/ffi/optional.h"
 #include "tvm/ir/expr.h"
 #include "tvm/ir/transform.h"
-#include <tvm/ffi/extra/structural_equal.h>
-#include <tvm/ffi/extra/structural_hash.h>
-#include <tvm/runtime/logging.h>
-#include <tvm/tirx/builtin.h>
-#include <tvm/tirx/expr.h>
-#include <tvm/tirx/op.h>
-#include <tvm/tirx/stmt.h>
-#include <tvm/tirx/stmt_functor.h>
-#include <tvm/tirx/transform.h>
+#include "tvm/node/structural_hash.h"
+#include "tvm/tir/builtin.h"
+#include "tvm/tir/expr.h"
+#include "tvm/tir/op.h"
+#include "tvm/tir/stmt.h"
+#include "tvm/tir/stmt_functor.h"
+#include "tvm/tir/transform.h"
 
-#include <algorithm>
 #include <sstream>
-#include <unordered_map>
-#include <vector>
 
 namespace tvm::tl {
-using namespace tirx;
+using namespace tir;
 
-class AssumeInjector : public tvm::tirx::StmtExprMutator {
-  using Base = tvm::tirx::StmtExprMutator;
+class AssumeInjector : public tvm::tir::StmtExprMutator {
+  using Base = tvm::tir::StmtExprMutator;
 
 public:
   AssumeInjector(PrimFunc f) : f(f) {}
@@ -46,8 +41,8 @@ private:
       std::vector<Buffer> buffers;
     };
 
-    ffi::StructuralHash sh;
-    ffi::StructuralEqual se;
+    tvm::StructuralHash sh;
+    tvm::StructuralEqual se;
     // grouped by expr, since the amount of variadic shape symbols is usually
     // much smaller than buffer
     std::vector<Item> items;
@@ -56,8 +51,9 @@ private:
     void addExpr(PrimExpr e, Buffer buffer) {
       size_t h = sh(e);
       auto &bucket = buckets[h];
-      auto it = std::find_if(bucket.begin(), bucket.end(),
-                             [&](size_t y) { return se(e, items[y].expr); });
+      auto it = std::find_if(bucket.begin(), bucket.end(), [&](size_t y) {
+        return se(e, items[y].expr, true);
+      });
       if (it == bucket.end()) {
         auto index = items.size();
         items.push_back({e, {buffer}});
@@ -88,7 +84,7 @@ private:
       size_t h = sh(stride);
       auto &bucket = stride_div_buckets[h];
       auto it = std::find_if(bucket.begin(), bucket.end(), [&](size_t y) {
-        return se(stride, stride_div_items[y].stride);
+        return se(stride, stride_div_items[y].stride, true);
       });
       if (it == bucket.end()) {
         auto index = stride_div_items.size();
@@ -128,7 +124,7 @@ private:
             ss << ", ";
           ss << "`" << e.buffers[i]->name << "`";
         }
-        body = AttrStmt(simplified, tirx::attr::tilelang_assume,
+        body = AttrStmt(simplified, tir::attr::tilelang_assume,
                         StringImm(ss.str()), body);
       }
       // Inject stride divisibility assumes for sub-byte dtypes.
@@ -145,7 +141,7 @@ private:
             ss << ", ";
           ss << "`" << e.buffers[i]->name << "`";
         }
-        body = AttrStmt(cond, tirx::attr::tilelang_assume, StringImm(ss.str()),
+        body = AttrStmt(cond, tir::attr::tilelang_assume, StringImm(ss.str()),
                         body);
       }
       return body;
@@ -153,10 +149,11 @@ private:
   };
 
   Stmt VisitStmt_(const DeclBufferNode *op) final {
+    auto body = VisitStmt(op->body);
     AssumeCreator c;
     c.addBuffer(op->buffer);
     c.addBufferStrides(op->buffer);
-    return SeqStmt({DeclBuffer(op->buffer, op->span), c.build(Evaluate(0))});
+    return DeclBuffer(op->buffer, c.build(body), op->span);
   }
 
   Stmt VisitStmt_(const SeqStmtNode *op) final {
@@ -182,7 +179,6 @@ private:
       //      ...
       //    }
       if (auto e = GetAssumeExprInEvaluateForm(stmt)) {
-        WarnIfAssumeReadsLocalVar(*e);
         groups.push_back(AssumeGroup{*e, {}});
       } else {
         groups.back().stmts.push_back(stmt);
@@ -194,7 +190,7 @@ private:
         Stmt body = g.stmts.size() == 1 ? g.stmts[0] : SeqStmt(g.stmts);
         std::stringstream ss;
         ss << "Assume: " << *(g.e);
-        AttrStmt attr = AttrStmt(*g.e, tirx::attr::tilelang_assume,
+        AttrStmt attr = AttrStmt(*g.e, tir::attr::tilelang_assume,
                                  StringImm(ss.str()), body);
         groups[i - 1].stmts.push_back(attr);
       } else {
@@ -206,45 +202,7 @@ private:
     // return SeqStmt(groups[0].stmts);
   }
 
-  static std::vector<Buffer> CollectLocalVarBufferLoads(const PrimExpr &expr) {
-    std::vector<Buffer> buffers;
-    PostOrderVisit(expr, [&](const ffi::ObjectRef &obj) {
-      const auto *load = obj.as<BufferLoadNode>();
-      if (!load || load->buffer.scope() != "local.var") {
-        return;
-      }
-      if (std::none_of(buffers.begin(), buffers.end(), [&](const Buffer &b) {
-            return b.same_as(load->buffer);
-          })) {
-        buffers.push_back(load->buffer);
-      }
-    });
-    return buffers;
-  }
-
-  static void WarnIfAssumeReadsLocalVar(const PrimExpr &expr) {
-    std::vector<Buffer> buffers = CollectLocalVarBufferLoads(expr);
-    if (buffers.empty()) {
-      return;
-    }
-
-    std::stringstream ss;
-    for (size_t i = 0; i < buffers.size(); ++i) {
-      if (i) {
-        ss << ", ";
-      }
-      ss << "`" << buffers[i]->name << "`";
-    }
-    LOG(WARNING)
-        << "T.assume condition reads from T.alloc_var/local.var buffer "
-        << ss.str()
-        << ". local.var is mutable, so this assumption may not be propagated "
-           "to later memory-access proofs. If the value is not mutated, use an "
-           "immutable expression binding instead of T.alloc_var. Condition: "
-        << expr;
-  }
-
-  Stmt VisitStmt_(const SBlockNode *op) final {
+  Stmt VisitStmt_(const BlockNode *op) final {
     auto body = VisitStmt(op->body);
     AssumeCreator c;
 
@@ -265,15 +223,15 @@ private:
       c.addBufferStrides(item->buffer);
     }
 
-    return SBlock(op->iter_vars, op->reads, op->writes, op->name_hint,
-                  c.build(body), op->init, op->alloc_buffers, op->match_buffers,
-                  op->annotations, op->span);
+    return Block(op->iter_vars, op->reads, op->writes, op->name_hint,
+                 c.build(body), op->init, op->alloc_buffers, op->match_buffers,
+                 op->annotations, op->span);
   }
 
   PrimFunc f;
 };
 
-using namespace tirx::transform;
+using namespace tir::transform;
 
 tvm::transform::Pass InjectAssumes() {
   auto pass_func = [=](PrimFunc f, IRModule m, PassContext ctx) {

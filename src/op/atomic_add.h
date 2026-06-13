@@ -7,12 +7,11 @@
 #define TVM_TL_OP_ATOMIC_ADD_H_
 
 #include "atomic_reduce.h"
-#include "support/check.h"
 
 namespace tvm {
 namespace tl {
 
-using namespace tirx;
+using namespace tir;
 
 /*!
  * \brief Node class for atomic addition operations.
@@ -67,9 +66,8 @@ public:
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(AtomicAdd, TileOperator,
                                              AtomicAddNode);
   TVM_DLL
-  AtomicAdd(ffi::Array<PrimExpr> args,
-            ffi::Map<ffi::String, ffi::ObjectRef> annotations =
-                ffi::Map<ffi::String, ffi::ObjectRef>());
+  AtomicAdd(Array<PrimExpr> args,
+            Map<String, ObjectRef> annotations = Map<String, ObjectRef>());
   static const Op &Get();
 };
 

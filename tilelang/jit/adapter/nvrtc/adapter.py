@@ -1,18 +1,17 @@
 from __future__ import annotations
 import logging
-from typing import Any
-from collections.abc import Callable
+from typing import Any, Callable
 
 import torch
-from tvm import tirx
+from tvm import tir
 from tvm.target import Target
 
 from tilelang import tvm as tvm
 from tilelang.engine.param import KernelParam
 from tilelang.jit.adapter.wrapper import TLPyWrapper
 from tilelang.utils.language import retrieve_func_from_module
-from tilelang.backend.target import determine_target
-from tilelang.jit.adapter.base import BaseKernelAdapter, CachedTextSource
+from tilelang.utils.target import determine_target
+from tilelang.jit.adapter.base import BaseKernelAdapter
 from tilelang.jit.adapter.nvrtc import is_nvrtc_available, check_nvrtc_available
 
 from .libgen import NVRTCLibraryGenerator
@@ -33,7 +32,7 @@ class NVRTCKernelAdapter(BaseKernelAdapter):
         params: list[KernelParam],
         result_idx: list[int],
         target: str | Target,
-        func_or_mod: tirx.PrimFunc | tvm.IRModule,
+        func_or_mod: tir.PrimFunc | tvm.IRModule,
         host_mod: tvm.IRModule | None = None,
         device_mod: tvm.IRModule | None = None,
         device_kernel_source: str | None = None,
@@ -47,7 +46,7 @@ class NVRTCKernelAdapter(BaseKernelAdapter):
         self.result_idx = self._legalize_result_idx(result_idx)
         self.device_kernel_source = device_kernel_source
 
-        if isinstance(func_or_mod, tirx.PrimFunc):
+        if isinstance(func_or_mod, tir.PrimFunc):
             self.ir_module = tvm.IRModule({func_or_mod.attrs["global_symbol"]: func_or_mod})
         else:
             self.ir_module = func_or_mod
@@ -59,10 +58,10 @@ class NVRTCKernelAdapter(BaseKernelAdapter):
         for param in params:
             native_shape = []
             for dim in param.shape:
-                if isinstance(dim, tirx.IntImm):
+                if isinstance(dim, tir.IntImm):
                     native_shape.append(int(dim))
-                elif isinstance(dim, tirx.Var):
-                    # Keep tirx.Var for dynamic dimensions
+                elif isinstance(dim, tir.Var):
+                    # Keep tir.Var for dynamic dimensions
                     native_shape.append(dim)
                 else:
                     native_shape.append(dim)
@@ -70,7 +69,7 @@ class NVRTCKernelAdapter(BaseKernelAdapter):
 
         self.dynamic_symbolic_map = self._process_dynamic_symbolic()
 
-        self.target = Target(determine_target(target))
+        self.target = Target.canon_target(determine_target(target))
         self.verbose = verbose
         self.wrapper = TLPyWrapper(self.target)
         self.wrapper.assign_optimized_module(self.ir_module)
@@ -102,9 +101,9 @@ class NVRTCKernelAdapter(BaseKernelAdapter):
         params: list[KernelParam],
         result_idx: list[int],
         target: str,
-        func_or_mod: tirx.PrimFunc | tvm.IRModule,
-        host_kernel_source: CachedTextSource,
-        device_kernel_source: CachedTextSource,
+        func_or_mod: tir.PrimFunc | tvm.IRModule,
+        host_kernel_source: str,
+        device_kernel_source: str,
         kernel_lib_path: str,
         verbose: bool = False,
         pass_configs: dict[str, Any] | None = None,
@@ -113,11 +112,10 @@ class NVRTCKernelAdapter(BaseKernelAdapter):
         adapter = cls.__new__(cls)
         adapter.params = params
         adapter.result_idx = adapter._legalize_result_idx(result_idx)
-        host_kernel_source = adapter._set_cached_text_source("host_func", "_host_kernel_source_path", host_kernel_source)
-        adapter.host_kernel_source = host_kernel_source.text
-        adapter._set_cached_text_source("device_kernel_source", "_device_kernel_source_path", device_kernel_source)
+        adapter.host_kernel_source = host_kernel_source
+        adapter.device_kernel_source = device_kernel_source
 
-        if isinstance(func_or_mod, tirx.PrimFunc):
+        if isinstance(func_or_mod, tir.PrimFunc):
             adapter.ir_module = tvm.IRModule({func_or_mod.attrs["global_symbol"]: func_or_mod})
         else:
             adapter.ir_module = func_or_mod
@@ -129,10 +127,10 @@ class NVRTCKernelAdapter(BaseKernelAdapter):
         for param in params:
             native_shape = []
             for dim in param.shape:
-                if isinstance(dim, tirx.IntImm):
+                if isinstance(dim, tir.IntImm):
                     native_shape.append(int(dim))
-                elif isinstance(dim, tirx.Var):
-                    # Keep tirx.Var for dynamic dimensions
+                elif isinstance(dim, tir.Var):
+                    # Keep tir.Var for dynamic dimensions
                     native_shape.append(dim)
                 else:
                     native_shape.append(dim)
@@ -140,7 +138,7 @@ class NVRTCKernelAdapter(BaseKernelAdapter):
 
         adapter.dynamic_symbolic_map = adapter._process_dynamic_symbolic()
 
-        adapter.target = Target(determine_target(target))
+        adapter.target = Target.canon_target(determine_target(target))
         adapter.verbose = verbose
         adapter.lib_generator = NVRTCLibraryGenerator(adapter.target, adapter.verbose)
         adapter.lib_generator.assign_compile_flags(compile_flags)
@@ -156,7 +154,7 @@ class NVRTCKernelAdapter(BaseKernelAdapter):
         adapter._post_init()
         return adapter
 
-    def _process_dynamic_symbolic(self) -> dict[tirx.Var, tuple[int, int]]:
+    def _process_dynamic_symbolic(self) -> dict[tir.Var, tuple[int, int]]:
         """Extract information about dynamic shapes from the TIR function.
 
         Maps symbolic variables to their corresponding (buffer_index, shape_dimension)
@@ -164,27 +162,27 @@ class NVRTCKernelAdapter(BaseKernelAdapter):
 
         Returns
         -------
-        Dict[tirx.Var, Tuple[int, int]]
+        Dict[tir.Var, Tuple[int, int]]
             Mapping from symbolic variable to (buffer_index, shape_dimension)
         """
         func = self.prim_func
         params = func.params
         buffer_map = func.buffer_map
         dynamic_symbolic_map = {}
-        # Secondary index by variable name for fallback lookup when tirx.Var
+        # Secondary index by variable name for fallback lookup when tir.Var
         # object identity differs (e.g. params created from a different
         # PrimFunc instance than the one stored in ir_module).
         self._dynamic_symbolic_name_map: dict[str, tuple[int, int]] = {}
         for i, param in enumerate(params):
             buffer = buffer_map[param]
             for j, shape in enumerate(buffer.shape):
-                if isinstance(shape, tirx.Var) and (shape not in dynamic_symbolic_map):
+                if isinstance(shape, tir.Var) and (shape not in dynamic_symbolic_map):
                     dynamic_symbolic_map[shape] = (i, j)
                     self._dynamic_symbolic_name_map[shape.name] = (i, j)
         return dynamic_symbolic_map
 
-    def _lookup_dynamic_symbolic(self, v: tirx.Var) -> tuple[int, int]:
-        """Look up a tirx.Var in the dynamic symbolic map.
+    def _lookup_dynamic_symbolic(self, v: tir.Var) -> tuple[int, int]:
+        """Look up a tir.Var in the dynamic symbolic map.
 
         Falls back to name-based lookup when object identity doesn't match.
         """
@@ -203,13 +201,9 @@ class NVRTCKernelAdapter(BaseKernelAdapter):
             The kernel source code, or None if not available
         """
         if kernel_only:
-            return self._load_cached_text_source("device_kernel_source", "_device_kernel_source_path")
+            return self.device_kernel_source
         else:
-            return self._load_cached_text_source("host_func", "_host_kernel_source_path")
-
-    def get_host_source(self) -> str | None:
-        """Get the cached host-side source code."""
-        return self._load_cached_text_source("host_func", "_host_kernel_source_path")
+            return self.host_func
 
     def _forward_from_prebuild_lib(self, *args, stream: int | None = None):
         """Low-level function to call the compiled CUDA kernel."""
@@ -245,7 +239,7 @@ class NVRTCKernelAdapter(BaseKernelAdapter):
                 shape = []
                 # Now working with native Python list, no FFI calls needed
                 for s in self.param_shapes[i]:
-                    if isinstance(s, tirx.Var):
+                    if isinstance(s, tir.Var):
                         ref_tensor_idx, ref_shape_idx = self._lookup_dynamic_symbolic(s)
                         shape.append(ins[ref_tensor_idx].shape[ref_shape_idx])
                     else:  # Already converted to Python int during initialization
@@ -286,6 +280,6 @@ class NVRTCKernelAdapter(BaseKernelAdapter):
         return self._wrap_forward_from_prebuild_lib
 
     @property
-    def prim_func(self) -> tirx.PrimFunc:
+    def prim_func(self) -> tir.PrimFunc:
         """Returns the primary TIR function from the IR module."""
         return retrieve_func_from_module(self.ir_module)

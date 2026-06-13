@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 from tilelang._typing import BufferLikeType
-from tvm import tirx
+from tvm import tir
 from tilelang.language import has_let_value, get_let_value
 from tilelang.utils.language import get_buffer_region_from_load, to_buffer_region
 
 
-def fill(buffer: BufferLikeType, value: tirx.PrimExpr) -> tirx.PrimExpr:
+def fill(buffer: BufferLikeType, value: tir.PrimExpr) -> tir.PrimExpr:
     """Fill a buffer or buffer region with a specified value.
 
     Args:
@@ -18,26 +18,26 @@ def fill(buffer: BufferLikeType, value: tirx.PrimExpr) -> tirx.PrimExpr:
         A TVM intrinsic call that performs the fill operation
     """
     # Normalize Var with let value to its underlying object
-    if isinstance(buffer, tirx.Var) and has_let_value(buffer):
+    if isinstance(buffer, tir.Var) and has_let_value(buffer):
         buffer = get_let_value(buffer)
 
     # Build tl.region as argument
-    if isinstance(buffer, tirx.Buffer):
+    if isinstance(buffer, tir.Buffer):
         extents = list(buffer.shape)
-    elif isinstance(buffer, tirx.BufferRegion):
+    elif isinstance(buffer, tir.BufferRegion):
         extents = [r.extent for r in buffer.region]
-    elif isinstance(buffer, tirx.BufferLoad):
+    elif isinstance(buffer, tir.BufferLoad):
         region = get_buffer_region_from_load(buffer)
         if region is not None:
             extents = [r.extent for r in region.region]
         else:
-            extents = [tirx.IntImm("int32", 1) for _ in buffer.indices]
+            extents = [tir.IntImm("int32", 1) for _ in buffer.indices]
     else:
         extents = []
-    return tirx.call_intrin("handle", tirx.op.Op.get("tl.tileop.fill"), to_buffer_region(buffer, access_type="w", extents=extents), value)
+    return tir.call_intrin("handle", tir.op.Op.get("tl.tileop.fill"), to_buffer_region(buffer, access_type="w", extents=extents), value)
 
 
-def clear(buffer: BufferLikeType) -> tirx.PrimExpr:
+def clear(buffer: BufferLikeType) -> tir.PrimExpr:
     """Clear a buffer by filling it with zeros.
 
     Args:
@@ -49,11 +49,11 @@ def clear(buffer: BufferLikeType) -> tirx.PrimExpr:
     Raises:
         ValueError: If the buffer variable contains an invalid buffer region
     """
-    if isinstance(buffer, tirx.Var) and has_let_value(buffer):
+    if isinstance(buffer, tir.Var) and has_let_value(buffer):
         buffer_region = get_let_value(buffer)  # Get the actual buffer region from variable
-        if isinstance(buffer_region, tirx.BufferRegion):
+        if isinstance(buffer_region, tir.BufferRegion):
             return fill(buffer_region, 0)
-        elif isinstance(buffer_region, tirx.BufferLoad):
+        elif isinstance(buffer_region, tir.BufferLoad):
             region = get_buffer_region_from_load(buffer_region)
             if region is None:
                 raise ValueError(f"Invalid buffer region: {buffer_region}, type: {type(buffer_region)}")

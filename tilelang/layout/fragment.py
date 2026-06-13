@@ -1,9 +1,10 @@
 """Wrapping Layouts."""
 
 # pylint: disable=invalid-name, unsupported-binary-operation
+import tvm
 import tvm_ffi
 from tvm.ir import Range
-from tvm.tirx import IterVar, Var, PrimExpr, IndexMap
+from tvm.tir import IterVar, Var, PrimExpr, IndexMap
 from tilelang import _ffi_api
 from tilelang.layout import Layout
 
@@ -59,7 +60,7 @@ class Fragment(Layout):
 
         # Initialize placeholders for optional outputs
         forward_thread: IterVar = None
-        forward_index: tvm_ffi.Array = None
+        forward_index: tvm.ir.container.Array = None
         thread_replicate: IterVar = None
 
         # If a forward_fn is provided, use it to derive both thread mapping and indices
@@ -86,7 +87,7 @@ class Fragment(Layout):
         # Ensure forward_index is an array if it isn't None
         if forward_index is None:
             forward_index = []
-        elif not isinstance(forward_index, tvm_ffi.Array):
+        elif not isinstance(forward_index, tvm.ir.container.Array):
             forward_index = [forward_index]
 
         # Call TVM FFI constructor to set up internal data structures

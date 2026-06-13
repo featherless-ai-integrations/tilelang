@@ -4,10 +4,10 @@ the buffer's dimensionality."""
 
 from __future__ import annotations
 
-from tvm import tirx
+from tvm import tir
 
 
-_original_buffer_getitem = tirx.Buffer.__getitem__
+_original_buffer_getitem = tir.Buffer.__getitem__
 
 
 def _patched_buffer_getitem(self, indices):
@@ -23,4 +23,4 @@ def _patched_buffer_getitem(self, indices):
     return _original_buffer_getitem(self, indices)
 
 
-tirx.Buffer.__getitem__ = _patched_buffer_getitem
+tir.Buffer.__getitem__ = _patched_buffer_getitem

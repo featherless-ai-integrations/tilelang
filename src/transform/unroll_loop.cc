@@ -22,13 +22,13 @@
  * \file unroll_loop.cc
  */
 // Unrolls the loop as in Halide pipeline.
-#include "support/check.h"
 #include <tvm/arith/analyzer.h>
-#include <tvm/ir/cast.h>
-#include <tvm/tirx/expr.h>
-#include <tvm/tirx/op.h>
-#include <tvm/tirx/stmt_functor.h>
-#include <tvm/tirx/transform.h>
+#include <tvm/ffi/function.h>
+#include <tvm/ffi/reflection/registry.h>
+#include <tvm/tir/expr.h>
+#include <tvm/tir/op.h>
+#include <tvm/tir/stmt_functor.h>
+#include <tvm/tir/transform.h>
 
 #include <unordered_set>
 
@@ -38,8 +38,7 @@
 namespace tvm {
 namespace tl {
 
-using namespace tirx;
-using namespace ffi;
+using namespace tir;
 
 struct UnrollLoopConfigNode
     : public AttrsNodeReflAdapter<UnrollLoopConfigNode> {
@@ -50,7 +49,7 @@ struct UnrollLoopConfigNode
   int unroll_local_access;
 
   static void RegisterReflection() {
-    namespace refl = reflection;
+    namespace refl = tvm::ffi::reflection;
     refl::ObjectDef<UnrollLoopConfigNode>()
         .def_ro("auto_max_step", &UnrollLoopConfigNode::auto_max_step,
                 "Threshold of number of steps in the loop to be automatically "
@@ -91,7 +90,7 @@ public:
       : var_touched_local_(var_touched_local) {}
 
   void VisitExpr_(const VarNode *op) final {
-    var_touched_local_->insert(GetRef<Var>(op));
+    var_touched_local_->insert(ffi::GetRef<Var>(op));
   }
 
 private:
@@ -101,51 +100,6 @@ private:
 // The Visitor is used to check whether var is used as write index in a local
 // memory If a loop var is used as indices to a local memory, it must be
 // unrolled so the local memory access can be turned into register access.
-class UnrolledBodyDefFreshener : public StmtExprMutator {
-public:
-  PrimExpr VisitExpr_(const VarNode *op) final {
-    Var var = GetRef<Var>(op);
-    auto it = var_remap_.find(var);
-    if (it != var_remap_.end()) {
-      return (*it).second;
-    }
-    return var;
-  }
-
-  Buffer VisitBufferDef(const Buffer &buffer, bool alloc_data) final {
-    Var data;
-    if (alloc_data) {
-      data = FreshVar(buffer->data);
-    } else {
-      PrimExpr remapped_data = VisitExpr(buffer->data);
-      ICHECK(remapped_data.as<VarNode>())
-          << "Buffer data must remain a Var after freshening definitions";
-      data = Downcast<Var>(remapped_data);
-    }
-
-    auto visit_expr = [this](const PrimExpr &expr) {
-      return this->VisitExpr(expr);
-    };
-    Buffer new_buffer = buffer;
-    auto writer = new_buffer.CopyOnWrite();
-    writer->data = std::move(data);
-    writer->shape = buffer->shape.Map(visit_expr);
-    writer->strides = buffer->strides.Map(visit_expr);
-    writer->elem_offset = visit_expr(buffer->elem_offset);
-    buffer_remap_.Set(buffer, new_buffer);
-    return new_buffer;
-  }
-
-private:
-  Var FreshVar(const Var &var) {
-    Var new_var = Var(make_object<VarNode>(*var.get()));
-    var_remap_.Set(var, new_var);
-    return new_var;
-  }
-
-  Map<Var, Var> var_remap_;
-};
-
 class LoopUnroller : public StmtExprMutator {
 public:
   explicit LoopUnroller(int auto_max_step, int auto_max_depth,
@@ -236,7 +190,7 @@ public:
         }
       }
     }
-    return GetRef<PrimExpr>(op);
+    return ffi::GetRef<PrimExpr>(op);
   }
 
   Stmt VisitStmt_(const BufferStoreNode *op) final {
@@ -284,12 +238,11 @@ public:
     if (value == 0)
       return Evaluate(0);
     Stmt body = op->body;
-    Map<Var, PrimExpr> vmap;
-    Array<Stmt> unrolled;
+    ffi::Map<Var, PrimExpr> vmap;
+    ffi::Array<Stmt> unrolled;
     for (int i = 0; i < value; ++i) {
       vmap.Set(op->loop_var, op->min + make_const(op->loop_var.dtype(), i));
       Stmt step = Substitute(body, vmap);
-      step = UnrolledBodyDefFreshener()(std::move(step));
       unrolled.push_back(step);
     }
     return SeqStmt::Flatten(unrolled);
@@ -345,7 +298,7 @@ Stmt UnrollLoop(Stmt stmt, UnrollLoopConfig cfg) {
 
 namespace transform {
 
-using namespace tirx::transform;
+using namespace tir::transform;
 
 Pass UnrollLoop() {
   auto pass_func = [=](PrimFunc f, IRModule m, PassContext ctx) {
@@ -361,7 +314,7 @@ Pass UnrollLoop() {
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {
-  namespace refl = reflection;
+  namespace refl = tvm::ffi::reflection;
   refl::GlobalDef().def("tl.transform.UnrollLoop", UnrollLoop);
 }
 

@@ -28,17 +28,15 @@ def _read_cmake_bool(i: str | None, default=False):
 def get_git_commit_id() -> str | None:
     """Get the current git commit hash by running git in the current file's directory."""
 
-    if (ROOT / ".git").exists():
-        r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, encoding="utf-8")
-        if r.returncode == 0:
-            _git = r.stdout.strip()
-            git_pin.write_text(_git)
-            return _git
-
-    if git_pin.exists():
+    r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, encoding="utf-8")
+    if r.returncode == 0:
+        _git = r.stdout.strip()
+        git_pin.write_text(_git)
+        return _git
+    elif git_pin.exists():
         return git_pin.read_text().strip()
-
-    return None
+    else:
+        return None
 
 
 def dynamic_metadata(field: str, settings: dict[str, object] | None = None) -> str:
@@ -46,14 +44,10 @@ def dynamic_metadata(field: str, settings: dict[str, object] | None = None) -> s
 
     version = base_version
 
-    # Pin the source commit for sdists, even when the public version omits it.
+    # generate git version for sdist
     get_git_commit_id()
 
-    no_version_label = _read_cmake_bool(
-        os.environ.get("NO_VERSION_LABEL"),
-        default=not (ROOT / ".git").exists(),
-    )
-    if not no_version_label:
+    if not _read_cmake_bool(os.environ.get("NO_VERSION_LABEL")):
         exts = []
         backend = None
         if _read_cmake_bool(os.environ.get("NO_TOOLCHAIN_VERSION")):
@@ -62,8 +56,7 @@ def dynamic_metadata(field: str, settings: dict[str, object] | None = None) -> s
             # only on macosx_11_0_arm64, not necessary
             # backend = 'metal'
             pass
-        elif _read_cmake_bool(os.environ.get("USE_ROCM", "")) and not _read_cmake_bool(os.environ.get("USE_CUDA", "")):
-            # ROCm-only build. When USE_CUDA is also on (fat wheel), fall through and label as the CUDA backend so the wheel keeps using cuda naming
+        elif _read_cmake_bool(os.environ.get("USE_ROCM", "")):
             backend = "rocm"
         elif "USE_CUDA" in os.environ and not _read_cmake_bool(os.environ.get("USE_CUDA")):
             backend = "cpu"

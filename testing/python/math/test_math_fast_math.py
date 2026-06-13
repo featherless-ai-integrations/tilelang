@@ -50,16 +50,7 @@ def check_non_fastmath_usage(source, mathop_name):
     check_fastmath_usage(source, mathop_name, expect_fastmath=False)
 
 
-def run_single_arg_mathop_test(
-    mathop_name,
-    mathop_func,
-    M=32,
-    N=32,
-    block_M=32,
-    block_N=32,
-    dtype=T.float32,
-    cuda_mathop_name=None,
-):
+def run_single_arg_mathop_test(mathop_name, mathop_func, M=32, N=32, block_M=32, block_N=32, dtype=T.float32):
     """
     Test single-argument mathops.
     T.exp should generate expf (non-fastmath), T.__exp should generate __expf (fastmath)
@@ -83,14 +74,14 @@ def run_single_arg_mathop_test(
             tilelang.PassConfigKey.TL_ENABLE_FAST_MATH: False,
         },
     )
+
     source_no_fastmath = kernel_no_fastmath.get_kernel_source()
 
     print(f"\n=== Testing {mathop_name} ===")
     print("FAST_MATH=False:")
 
     # Our tl.* intrinsics actually generate fastmath versions (e.g., __expf)
-    cuda_mathop_name = cuda_mathop_name or mathop_name
-    check_fastmath_usage(source_no_fastmath, cuda_mathop_name, expect_fastmath=False)
+    check_fastmath_usage(source_no_fastmath, mathop_name, expect_fastmath=False)
 
     print(f"✓ {mathop_name} compilation and execution test passed")
 
@@ -288,6 +279,7 @@ SINGLE_ARG_MATHOPS = [
     ("floor", T.floor),
     ("ceil", T.ceil),
     ("trunc", T.trunc),
+    ("round", T.round),
     ("nearbyint", T.nearbyint),
 ]
 
@@ -301,24 +293,6 @@ def test_mathops_generate_no_fastmath(name, func):
     # This appears to be the intended behavior
     run_single_arg_mathop_test(name, func, dtype=T.float32)
     print(f"✓ {name} test passed")
-
-
-@tilelang.testing.requires_cuda
-@pytest.mark.parametrize(
-    ("rounding_mode", "func", "cuda_mathop_name"),
-    [
-        ("ties-to-even", lambda x: T.round(x), "nearbyint"),
-        ("ties-away-from-zero", lambda x: T.round(x, "ties-away-from-zero"), "round"),
-    ],
-    ids=["ties-to-even", "ties-away-from-zero"],
-)
-def test_round_modes(rounding_mode, func, cuda_mathop_name):
-    run_single_arg_mathop_test(
-        f"round[{rounding_mode}]",
-        func,
-        dtype=T.float32,
-        cuda_mathop_name=cuda_mathop_name,
-    )
 
 
 @tilelang.testing.requires_cuda

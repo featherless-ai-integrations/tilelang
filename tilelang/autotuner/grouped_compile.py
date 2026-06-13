@@ -6,11 +6,10 @@ so tuner.py can stay focused on orchestration.
 
 from __future__ import annotations
 
-from typing import Any
-from collections.abc import Callable
+from typing import Any, Callable
 
 from tilelang import tvm
-from tvm.tirx import PrimFunc
+from tvm.tir import PrimFunc
 
 from tilelang.autotuner.param import CompileArgs
 from tilelang.engine.lower import lower_to_host_device_ir, device_codegen, host_codegen

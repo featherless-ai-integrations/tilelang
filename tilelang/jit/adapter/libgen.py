@@ -19,7 +19,7 @@ from tilelang.contrib.nvcc import (
 )
 from tilelang.contrib.rocm import find_rocm_path, get_rocm_arch
 from tilelang.env import TILELANG_TEMPLATE_PATH
-from tilelang.contrib.hip_resource_info import filter_and_record
+from tilelang.utils.target import target_get_mcpu
 
 from .utils import is_cpu_target, is_cuda_target, is_hip_target
 
@@ -113,9 +113,7 @@ class LibraryGenerator:
             ]
 
         elif is_hip_target(target):
-            from tilelang.rocm.target import target_get_mcpu
-
-            from tilelang.env import COMPOSABLE_KERNEL_INCLUDE_DIR, TILELANG_HIP_SAVE_TEMP_FILES
+            from tilelang.env import COMPOSABLE_KERNEL_INCLUDE_DIR
 
             src = tempfile.NamedTemporaryFile(mode="w", suffix=".cpp", delete=False)  # noqa: SIM115
             libpath = src.name.replace(".cpp", ".so")
@@ -128,13 +126,10 @@ class LibraryGenerator:
                 f"--offload-arch={arch}",
                 "--shared",
                 src.name,
-                "-Rpass-analysis=kernel-resource-usage",
             ]
             command += [
                 "-I" + COMPOSABLE_KERNEL_INCLUDE_DIR,
             ]
-            if TILELANG_HIP_SAVE_TEMP_FILES != "0":
-                command += ["--save-temps", "-g"]
         elif is_cpu_target(target):
             from tilelang.contrib.cc import get_cplus_compiler
 
@@ -177,9 +172,6 @@ class LibraryGenerator:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
             )
-        if is_hip_target(target):
-            run_kwargs.setdefault("stdout", subprocess.PIPE)
-            run_kwargs.setdefault("stderr", subprocess.STDOUT)
 
         try:
             if verbose:
@@ -191,11 +183,6 @@ class LibraryGenerator:
         if ret.returncode != 0:
             captured = ret.stdout.decode("utf-8", errors="replace") if ret.stdout else ""
             raise RuntimeError(f"Compilation Failed! {command}\n{captured}\n{self.lib_code}")
-
-        if is_hip_target(target) and ret.stdout is not None:
-            captured = filter_and_record(ret.stdout.decode("utf-8", errors="replace"))
-            if verbose and captured.strip():
-                print(captured)
 
         self.srcpath = src.name
         self.libpath = libpath
